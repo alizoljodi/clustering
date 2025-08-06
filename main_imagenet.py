@@ -182,6 +182,16 @@ if __name__ == '__main__':
     parser.add_argument('--T', default=4.0, type=float, help='temperature coefficient for KL divergence')
     parser.add_argument('--bn_lr', default=1e-3, type=float, help='learning rate for DC')
     parser.add_argument('--lamb_c', default=0.02, type=float, help='hyper-parameter for DC')
+    
+    # cluster affine parameters
+    parser.add_argument('--alpha', default=0.4, type=float, help='alpha blending parameter for cluster affine correction')
+    parser.add_argument('--num_clusters', default=64, type=int, help='number of clusters for cluster affine correction')
+    parser.add_argument('--pca_dim', default=50, type=int, help='PCA dimension for clustering (None to disable)')
+    
+    # Multiple parameter testing
+    parser.add_argument('--alpha_list', nargs='+', type=float, help='list of alpha values to test')
+    parser.add_argument('--num_clusters_list', nargs='+', type=int, help='list of cluster numbers to test')
+    parser.add_argument('--pca_dim_list', nargs='+', type=int, help='list of PCA dimensions to test')
     args = parser.parse_args()
 
     seed_all(args.seed)
@@ -255,7 +265,11 @@ if __name__ == '__main__':
     print('Full quantization (W{}A{}) accuracy: {}'.format(args.n_bits_w, args.n_bits_a,
                                                            validate_model(test_loader, qnn)))
 
-    def build_cluster_affine(q_model, fp_model, dataloader, device, num_clusters=64, pca_dim=None):
+    def extract_model_logits(q_model, fp_model, dataloader, device):
+        """
+        Extract logits from both quantized and full-precision models.
+        Returns concatenated logits tensors.
+        """
         q_model.eval()
         fp_model.eval()
 
@@ -271,7 +285,13 @@ if __name__ == '__main__':
 
         all_q = torch.cat(all_q, dim=0)  # [N, C]
         all_fp = torch.cat(all_fp, dim=0)  # [N, C]
+        
+        return all_q, all_fp
 
+    def build_cluster_affine(all_q, all_fp, num_clusters=64, pca_dim=None):
+        """
+        Build cluster affine correction model from pre-extracted logits.
+        """
         # Optional PCA for clustering only
         pca = None
         if pca_dim is not None and pca_dim < all_q.shape[1]:
@@ -357,11 +377,71 @@ if __name__ == '__main__':
         print(f"[Alpha={alpha:.2f}] Top-5 Accuracy: {total_top5 / total:.2f}%")
         return total_top1 / total, total_top5 / total
     
-    # When building the LUT
-    cluster_model, gamma_dict, beta_dict, pca = build_cluster_affine(
-        qnn, fp_model, train_loader, device, num_clusters=64, pca_dim=50
-    )
-
-    # Pass `pca` to evaluation
-    evaluate_cluster_affine_with_alpha(qnn, cluster_model, gamma_dict, beta_dict, test_loader, device, pca=pca, alpha=0.4)
+    # Extract logits from both models
+    print("Extracting logits from quantized and full-precision models...")
+    all_q, all_fp = extract_model_logits(qnn, fp_model, train_loader, device)
+    
+    # Determine parameter lists for testing
+    alpha_list = args.alpha_list if args.alpha_list else [args.alpha]
+    num_clusters_list = args.num_clusters_list if args.num_clusters_list else [args.num_clusters]
+    pca_dim_list = args.pca_dim_list if args.pca_dim_list else [args.pca_dim]
+    
+    print(f"Testing combinations:")
+    print(f"  Alpha values: {alpha_list}")
+    print(f"  Cluster numbers: {num_clusters_list}")
+    print(f"  PCA dimensions: {pca_dim_list}")
+    
+    # Store results
+    results = []
+    
+    # Loop through all parameter combinations
+    for alpha in alpha_list:
+        for num_clusters in num_clusters_list:
+            for pca_dim in pca_dim_list:
+                print(f"\n{'='*60}")
+                print(f"Testing: alpha={alpha}, clusters={num_clusters}, pca_dim={pca_dim}")
+                print(f"{'='*60}")
+                
+                # Build cluster affine model
+                cluster_model, gamma_dict, beta_dict, pca = build_cluster_affine(
+                    all_q, all_fp, num_clusters=num_clusters, pca_dim=pca_dim
+                )
+                
+                # Evaluate with current parameters
+                top1_acc, top5_acc = evaluate_cluster_affine_with_alpha(
+                    qnn, cluster_model, gamma_dict, beta_dict, test_loader, device, 
+                    pca=pca, alpha=alpha
+                )
+                
+                # Store results
+                result = {
+                    'alpha': alpha,
+                    'num_clusters': num_clusters,
+                    'pca_dim': pca_dim,
+                    'top1_accuracy': top1_acc,
+                    'top5_accuracy': top5_acc
+                }
+                results.append(result)
+                
+                print(f"Result: Top-1: {top1_acc:.2f}%, Top-5: {top5_acc:.2f}%")
+    
+    # Print summary of all results
+    print(f"\n{'='*80}")
+    print("SUMMARY OF ALL RESULTS")
+    print(f"{'='*80}")
+    print(f"{'Alpha':<8} {'Clusters':<10} {'PCA_dim':<10} {'Top-1':<10} {'Top-5':<10}")
+    print(f"{'-'*50}")
+    
+    for result in results:
+        print(f"{result['alpha']:<8.2f} {result['num_clusters']:<10} {result['pca_dim']:<10} "
+              f"{result['top1_accuracy']:<10.2f} {result['top5_accuracy']:<10.2f}")
+    
+    # Find best result
+    best_result = max(results, key=lambda x: x['top1_accuracy'])
+    print(f"\nBEST RESULT:")
+    print(f"  Alpha: {best_result['alpha']}")
+    print(f"  Clusters: {best_result['num_clusters']}")
+    print(f"  PCA_dim: {best_result['pca_dim']}")
+    print(f"  Top-1 Accuracy: {best_result['top1_accuracy']:.2f}%")
+    print(f"  Top-5 Accuracy: {best_result['top5_accuracy']:.2f}%")
 
