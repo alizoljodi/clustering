@@ -259,11 +259,11 @@ if __name__ == '__main__':
             else:
                 recon_model(module, fp_module)
     # Start calibration
-    recon_model(qnn, fp_model)
+    #recon_model(qnn, fp_model)
 
     qnn.set_quant_state(weight_quant=True, act_quant=True)
-    print('Full quantization (W{}A{}) accuracy: {}'.format(args.n_bits_w, args.n_bits_a,
-                                                           validate_model(test_loader, qnn)))
+    #print('Full quantization (W{}A{}) accuracy: {}'.format(args.n_bits_w, args.n_bits_a,
+    #                                                       validate_model(test_loader, qnn)))
 
     def build_cluster_affine_incremental(q_model, fp_model, dataloader, device, num_clusters=64, pca_dim=None):
         """
@@ -272,8 +272,15 @@ if __name__ == '__main__':
         q_model.eval()
         fp_model.eval()
         
-        # Initialize clustering model
-        cluster_model = GaussianMixture(n_components=num_clusters, random_state=42, warm_start=True)
+        # Initialize clustering model with regularization to prevent singular covariance
+        cluster_model = GaussianMixture(
+            n_components=num_clusters, 
+            random_state=42, 
+            warm_start=True,
+            reg_covar=1e-6,  # Add regularization to prevent singular covariance
+            max_iter=100,
+            n_init=3
+        )
         pca = None
         
         # Initialize storage for accumulating data
@@ -312,20 +319,39 @@ if __name__ == '__main__':
                     else:
                         q_features = all_q.numpy()
                     
-                    # Fit or update the clustering model
-                    if batch_count == 1:
-                        cluster_model.fit(q_features)
-                    else:
-                        cluster_model.fit(q_features)
+                    # Fit or update the clustering model with error handling
+                    try:
+                        if batch_count == 1:
+                            cluster_model.fit(q_features)
+                        else:
+                            cluster_model.fit(q_features)
+                    except ValueError as e:
+                        print(f"Warning: Clustering failed with {num_clusters} components. Trying with fewer components...")
+                        # Try with fewer components
+                        adaptive_clusters = min(num_clusters, max(2, q_features.shape[0] // 10))
+                        if adaptive_clusters < num_clusters:
+                            cluster_model = GaussianMixture(
+                                n_components=adaptive_clusters,
+                                random_state=42,
+                                warm_start=True,
+                                reg_covar=1e-6,
+                                max_iter=100,
+                                n_init=3
+                            )
+                            cluster_model.fit(q_features)
+                            print(f"Successfully fitted with {adaptive_clusters} components")
+                        else:
+                            raise e
                     
                     # Get cluster assignments
                     cluster_ids = cluster_model.predict(q_features)
+                    actual_clusters = cluster_model.n_components
                     
                     # Update gamma and beta dictionaries
                     gamma_dict = {}
                     beta_dict = {}
                     
-                    for cid in range(num_clusters):
+                    for cid in range(actual_clusters):
                         idxs = (cluster_ids == cid)
                         if idxs.sum() == 0:
                             # Empty cluster, default to identity
@@ -366,14 +392,33 @@ if __name__ == '__main__':
             else:
                 q_features = all_q.numpy()
             
-            cluster_model.fit(q_features)
+            try:
+                cluster_model.fit(q_features)
+            except ValueError as e:
+                print(f"Warning: Final clustering failed with {num_clusters} components. Trying with fewer components...")
+                adaptive_clusters = min(num_clusters, max(2, q_features.shape[0] // 10))
+                if adaptive_clusters < num_clusters:
+                    cluster_model = GaussianMixture(
+                        n_components=adaptive_clusters,
+                        random_state=42,
+                        warm_start=True,
+                        reg_covar=1e-6,
+                        max_iter=100,
+                        n_init=3
+                    )
+                    cluster_model.fit(q_features)
+                    print(f"Successfully fitted final model with {adaptive_clusters} components")
+                else:
+                    raise e
+            
             cluster_ids = cluster_model.predict(q_features)
+            actual_clusters = cluster_model.n_components
             
             # Final gamma and beta computation
             gamma_dict = {}
             beta_dict = {}
             
-            for cid in range(num_clusters):
+            for cid in range(actual_clusters):
                 idxs = (cluster_ids == cid)
                 if idxs.sum() == 0:
                     gamma_dict[cid] = torch.ones(all_q.shape[1])
