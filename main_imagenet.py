@@ -321,25 +321,42 @@ if __name__ == '__main__':
                     
                     # Fit or update the clustering model with error handling
                     try:
+                        # Ensure data is float64 for better numerical stability
+                        q_features_64 = q_features.astype(np.float64)
+                        
                         if batch_count == 1:
-                            cluster_model.fit(q_features)
+                            cluster_model.fit(q_features_64)
                         else:
-                            cluster_model.fit(q_features)
-                    except ValueError as e:
+                            cluster_model.fit(q_features_64)
+                    except (ValueError, np.linalg.LinAlgError) as e:
                         print(f"Warning: Clustering failed with {num_clusters} components. Trying with fewer components...")
-                        # Try with fewer components
-                        adaptive_clusters = min(num_clusters, max(2, q_features.shape[0] // 10))
+                        # Try with fewer components and higher regularization
+                        adaptive_clusters = min(num_clusters, max(2, q_features.shape[0] // 20))  # More conservative
                         if adaptive_clusters < num_clusters:
                             cluster_model = GaussianMixture(
                                 n_components=adaptive_clusters,
                                 random_state=42,
                                 warm_start=True,
-                                reg_covar=1e-6,
+                                reg_covar=1e-3,  # Higher regularization
                                 max_iter=100,
                                 n_init=3
                             )
-                            cluster_model.fit(q_features)
-                            print(f"Successfully fitted with {adaptive_clusters} components")
+                            try:
+                                cluster_model.fit(q_features_64)
+                                print(f"Successfully fitted with {adaptive_clusters} components")
+                            except (ValueError, np.linalg.LinAlgError) as e2:
+                                print(f"Still failing with {adaptive_clusters} components. Trying with 2 components...")
+                                # Last resort: use only 2 components
+                                cluster_model = GaussianMixture(
+                                    n_components=2,
+                                    random_state=42,
+                                    warm_start=True,
+                                    reg_covar=1e-2,  # Very high regularization
+                                    max_iter=100,
+                                    n_init=3
+                                )
+                                cluster_model.fit(q_features_64)
+                                print("Successfully fitted with 2 components")
                         else:
                             raise e
                     
@@ -393,21 +410,37 @@ if __name__ == '__main__':
                 q_features = all_q.numpy()
             
             try:
-                cluster_model.fit(q_features)
-            except ValueError as e:
+                # Ensure data is float64 for better numerical stability
+                q_features_64 = q_features.astype(np.float64)
+                cluster_model.fit(q_features_64)
+            except (ValueError, np.linalg.LinAlgError) as e:
                 print(f"Warning: Final clustering failed with {num_clusters} components. Trying with fewer components...")
-                adaptive_clusters = min(num_clusters, max(2, q_features.shape[0] // 10))
+                adaptive_clusters = min(num_clusters, max(2, q_features.shape[0] // 20))  # More conservative
                 if adaptive_clusters < num_clusters:
                     cluster_model = GaussianMixture(
                         n_components=adaptive_clusters,
                         random_state=42,
                         warm_start=True,
-                        reg_covar=1e-6,
+                        reg_covar=1e-3,  # Higher regularization
                         max_iter=100,
                         n_init=3
                     )
-                    cluster_model.fit(q_features)
-                    print(f"Successfully fitted final model with {adaptive_clusters} components")
+                    try:
+                        cluster_model.fit(q_features_64)
+                        print(f"Successfully fitted final model with {adaptive_clusters} components")
+                    except (ValueError, np.linalg.LinAlgError) as e2:
+                        print(f"Still failing with {adaptive_clusters} components. Trying with 2 components...")
+                        # Last resort: use only 2 components
+                        cluster_model = GaussianMixture(
+                            n_components=2,
+                            random_state=42,
+                            warm_start=True,
+                            reg_covar=1e-2,  # Very high regularization
+                            max_iter=100,
+                            n_init=3
+                        )
+                        cluster_model.fit(q_features_64)
+                        print("Successfully fitted final model with 2 components")
                 else:
                     raise e
             
