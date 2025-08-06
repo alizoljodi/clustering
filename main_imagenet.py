@@ -259,11 +259,11 @@ if __name__ == '__main__':
             else:
                 recon_model(module, fp_module)
     # Start calibration
-    #recon_model(qnn, fp_model)
+    recon_model(qnn, fp_model)
 
     qnn.set_quant_state(weight_quant=True, act_quant=True)
-    #print('Full quantization (W{}A{}) accuracy: {}'.format(args.n_bits_w, args.n_bits_a,
-    #                                                       validate_model(test_loader, qnn)))
+    print('Full quantization (W{}A{}) accuracy: {}'.format(args.n_bits_w, args.n_bits_a,
+                                                           validate_model(test_loader, qnn)))
 
     def build_cluster_affine_incremental(q_model, fp_model, dataloader, device, num_clusters=64, pca_dim=None):
         """
