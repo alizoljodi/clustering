@@ -5,7 +5,7 @@ import argparse
 import os
 from collections import defaultdict
 from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
 import random
 import time
 import hubconf  # noqa: F401
@@ -265,76 +265,137 @@ if __name__ == '__main__':
     print('Full quantization (W{}A{}) accuracy: {}'.format(args.n_bits_w, args.n_bits_a,
                                                            validate_model(test_loader, qnn)))
 
-    def extract_model_logits(q_model, fp_model, dataloader, device):
+    def build_cluster_affine_incremental(q_model, fp_model, dataloader, device, num_clusters=64, pca_dim=None):
         """
-        Extract logits from both quantized and full-precision models.
-        Returns concatenated logits tensors.
+        Build cluster affine correction model incrementally, processing batches one by one.
         """
         q_model.eval()
         fp_model.eval()
-
-        all_q, all_fp = [], []
-
+        
+        # Initialize clustering model
+        cluster_model = GaussianMixture(n_components=num_clusters, random_state=42, warm_start=True)
+        pca = None
+        
+        # Initialize storage for accumulating data
+        accumulated_q = []
+        accumulated_fp = []
+        batch_count = 0
+        
+        print("Building cluster model incrementally...")
+        
         with torch.no_grad():
             for i, (images, _) in enumerate(dataloader):
-                #if i>=10:
-                #    break
                 images = images.to(device)
                 q_logits = q_model(images)
                 fp_logits = fp_model(images)
-                all_q.append(q_logits.cpu())
-                all_fp.append(fp_logits.cpu())
+                
+                # Store batch data
+                accumulated_q.append(q_logits.cpu())
+                accumulated_fp.append(fp_logits.cpu())
+                batch_count += 1
+                
+                # Update clustering every few batches or when we have enough data
+                if batch_count % 5 == 0 or batch_count == 1:  # Update every 5 batches or on first batch
+                    print(f"Updating cluster model with {batch_count} batches...")
+                    
+                    # Concatenate accumulated data
+                    all_q = torch.cat(accumulated_q, dim=0)
+                    all_fp = torch.cat(accumulated_fp, dim=0)
+                    
+                    # Apply PCA if needed
+                    if pca_dim is not None and pca_dim < all_q.shape[1]:
+                        if pca is None:
+                            pca = PCA(n_components=pca_dim, random_state=42)
+                            q_features = pca.fit_transform(all_q.numpy())
+                        else:
+                            q_features = pca.transform(all_q.numpy())
+                    else:
+                        q_features = all_q.numpy()
+                    
+                    # Fit or update the clustering model
+                    if batch_count == 1:
+                        cluster_model.fit(q_features)
+                    else:
+                        cluster_model.fit(q_features)
+                    
+                    # Get cluster assignments
+                    cluster_ids = cluster_model.predict(q_features)
+                    
+                    # Update gamma and beta dictionaries
+                    gamma_dict = {}
+                    beta_dict = {}
+                    
+                    for cid in range(num_clusters):
+                        idxs = (cluster_ids == cid)
+                        if idxs.sum() == 0:
+                            # Empty cluster, default to identity
+                            gamma_dict[cid] = torch.ones(all_q.shape[1])
+                            beta_dict[cid] = torch.zeros(all_q.shape[1])
+                            continue
 
-        all_q = torch.cat(all_q, dim=0)  # [N, C]
-        all_fp = torch.cat(all_fp, dim=0)  # [N, C]
+                        q_c = all_q[idxs]  # [Nc, C]
+                        fp_c = all_fp[idxs]  # [Nc, C]
+
+                        # Closed-form least squares: fp ≈ gamma * q + beta
+                        mean_q = q_c.mean(dim=0)
+                        mean_fp = fp_c.mean(dim=0)
+
+                        # Compute variance, avoid div by zero
+                        var_q = q_c.var(dim=0, unbiased=False)
+                        var_q[var_q < 1e-8] = 1e-8
+
+                        gamma = ((q_c - mean_q) * (fp_c - mean_fp)).mean(dim=0) / var_q
+                        beta = mean_fp - gamma * mean_q
+
+                        gamma_dict[cid] = gamma
+                        beta_dict[cid] = beta
+                    
+                    print(f"Updated cluster model with {all_q.shape[0]} samples")
         
-        return all_q, all_fp
+        # Final update with all data
+        if len(accumulated_q) > 0:
+            all_q = torch.cat(accumulated_q, dim=0)
+            all_fp = torch.cat(accumulated_fp, dim=0)
+            
+            if pca_dim is not None and pca_dim < all_q.shape[1]:
+                if pca is None:
+                    pca = PCA(n_components=pca_dim, random_state=42)
+                    q_features = pca.fit_transform(all_q.numpy())
+                else:
+                    q_features = pca.transform(all_q.numpy())
+            else:
+                q_features = all_q.numpy()
+            
+            cluster_model.fit(q_features)
+            cluster_ids = cluster_model.predict(q_features)
+            
+            # Final gamma and beta computation
+            gamma_dict = {}
+            beta_dict = {}
+            
+            for cid in range(num_clusters):
+                idxs = (cluster_ids == cid)
+                if idxs.sum() == 0:
+                    gamma_dict[cid] = torch.ones(all_q.shape[1])
+                    beta_dict[cid] = torch.zeros(all_q.shape[1])
+                    continue
 
-    def build_cluster_affine(all_q, all_fp, num_clusters=64, pca_dim=None):
-        """
-        Build cluster affine correction model from pre-extracted logits.
-        """
-        # Optional PCA for clustering only
-        pca = None
-        if pca_dim is not None and pca_dim < all_q.shape[1]:
-            pca = PCA(n_components=pca_dim, random_state=42)
-            q_features = pca.fit_transform(all_q.numpy())
-        else:
-            q_features = all_q.numpy()
+                q_c = all_q[idxs]
+                fp_c = all_fp[idxs]
 
-        # Cluster quantized outputs
-        cluster_model = KMeans(n_clusters=num_clusters, random_state=42)
-        cluster_ids = cluster_model.fit_predict(q_features)
+                mean_q = q_c.mean(dim=0)
+                mean_fp = fp_c.mean(dim=0)
 
-        # For each cluster: learn gamma, beta (per-class)
-        gamma_dict = {}
-        beta_dict = {}
+                var_q = q_c.var(dim=0, unbiased=False)
+                var_q[var_q < 1e-8] = 1e-8
 
-        for cid in range(num_clusters):
-            idxs = (cluster_ids == cid)
-            if idxs.sum() == 0:
-                # Empty cluster, default to identity
-                gamma_dict[cid] = torch.ones(all_q.shape[1])
-                beta_dict[cid] = torch.zeros(all_q.shape[1])
-                continue
+                gamma = ((q_c - mean_q) * (fp_c - mean_fp)).mean(dim=0) / var_q
+                beta = mean_fp - gamma * mean_q
 
-            q_c = all_q[idxs]  # [Nc, C]
-            fp_c = all_fp[idxs]  # [Nc, C]
-
-            # Closed-form least squares: fp ≈ gamma * q + beta
-            mean_q = q_c.mean(dim=0)
-            mean_fp = fp_c.mean(dim=0)
-
-            # Compute variance, avoid div by zero
-            var_q = q_c.var(dim=0, unbiased=False)
-            var_q[var_q < 1e-8] = 1e-8
-
-            gamma = ((q_c - mean_q) * (fp_c - mean_fp)).mean(dim=0) / var_q
-            beta = mean_fp - gamma * mean_q
-
-            gamma_dict[cid] = gamma
-            beta_dict[cid] = beta
-
+                gamma_dict[cid] = gamma
+                beta_dict[cid] = beta
+        
+        print(f"Final cluster model built with {all_q.shape[0]} total samples")
         return cluster_model, gamma_dict, beta_dict, pca
 
     def apply_cluster_affine(q_logits, cluster_model, gamma_dict, beta_dict, pca=None, alpha=0.4):
@@ -379,10 +440,6 @@ if __name__ == '__main__':
         print(f"[Alpha={alpha:.2f}] Top-5 Accuracy: {total_top5 / total:.2f}%")
         return total_top1 / total, total_top5 / total
     
-    # Extract logits from both models
-    print("Extracting logits from quantized and full-precision models...")
-    all_q, all_fp = extract_model_logits(qnn, fp_model, train_loader, device)
-    
     # Determine parameter lists for testing
     alpha_list = args.alpha_list if args.alpha_list else [args.alpha]
     num_clusters_list = args.num_clusters_list if args.num_clusters_list else [args.num_clusters]
@@ -404,9 +461,9 @@ if __name__ == '__main__':
                 print(f"Testing: alpha={alpha}, clusters={num_clusters}, pca_dim={pca_dim}")
                 print(f"{'='*60}")
                 
-                # Build cluster affine model
-                cluster_model, gamma_dict, beta_dict, pca = build_cluster_affine(
-                    all_q, all_fp, num_clusters=num_clusters, pca_dim=pca_dim
+                # Build cluster affine model incrementally
+                cluster_model, gamma_dict, beta_dict, pca = build_cluster_affine_incremental(
+                    qnn, fp_model, train_loader, device, num_clusters=num_clusters, pca_dim=pca_dim
                 )
                 
                 # Evaluate with current parameters
