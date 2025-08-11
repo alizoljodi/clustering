@@ -78,6 +78,15 @@ def accuracy(output, target, topk=(1,)):
     with torch.no_grad():
         maxk = max(topk)
         batch_size = target.size(0)
+        
+        # Ensure maxk doesn't exceed the number of classes
+        num_classes = output.size(1)
+        maxk = min(maxk, num_classes)
+        
+        # Adjust topk list to only include valid values
+        valid_topk = [k for k in topk if k <= num_classes]
+        if not valid_topk:
+            return [torch.tensor(0.0) for _ in topk]
 
         _, pred = output.topk(maxk, 1, True, True)
         pred = pred.t()
@@ -85,8 +94,12 @@ def accuracy(output, target, topk=(1,)):
 
         res = []
         for k in topk:
-            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
-            res.append(correct_k.mul_(100.0 / batch_size))
+            if k <= num_classes:
+                correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
+                res.append(correct_k.mul_(100.0 / batch_size))
+            else:
+                # If k exceeds number of classes, return 0 accuracy
+                res.append(torch.tensor(0.0))
         return res
 
 @torch.no_grad()
@@ -363,6 +376,15 @@ if __name__ == '__main__':
         """
         Apply per-cluster affine correction with optional PCA and alpha blending.
         """
+        # Add safety checks for input tensor
+        if q_logits.numel() == 0:
+            print("Warning: q_logits is empty")
+            return q_logits
+        
+        if q_logits.dim() != 2:
+            print(f"Warning: q_logits has unexpected shape: {q_logits.shape}")
+            return q_logits
+            
         q_np = q_logits.cpu().numpy()
 
         # Apply same PCA as used during LUT building
@@ -383,8 +405,15 @@ if __name__ == '__main__':
         corrected = []
         for i, q in enumerate(q_logits):
             cid = int(cluster_ids[i])
-            gamma = gamma_dict[cid].to(q.device)
-            beta = beta_dict[cid].to(q.device)
+            
+            # Safety check: ensure cluster ID is valid
+            if cid not in gamma_dict or cid not in beta_dict:
+                print(f"Warning: Invalid cluster ID {cid}, using default values")
+                gamma = torch.ones(q.size(0)).to(q.device)
+                beta = torch.zeros(q.size(0)).to(q.device)
+            else:
+                gamma = gamma_dict[cid].to(q.device)
+                beta = beta_dict[cid].to(q.device)
             
             # Normalize the current input
             q_normalized = (q - q_mean.to(q.device)) / q_std.to(q.device)
@@ -395,18 +424,40 @@ if __name__ == '__main__':
             
             blended = q + alpha * (affine_corrected - q)
             corrected.append(blended)
-        return torch.stack(corrected)
+        
+        result = torch.stack(corrected)
+        
+        # Add safety check for output tensor
+        if torch.isnan(result).any() or torch.isinf(result).any():
+            print("Warning: Output contains NaN or Inf values, returning original input")
+            return q_logits
+            
+        return result
     
     def evaluate_cluster_affine_with_alpha(q_model, cluster_model, gamma_dict, beta_dict, dataloader, device, pca=None, alpha=0.4):
         q_model.eval()
         total_top1, total_top5, total = 0, 0, 0
 
         with torch.no_grad():
-            for images, targets in dataloader:
+            for batch_idx, (images, targets) in enumerate(dataloader):
                 images, targets = images.to(device), targets.to(device)
                 q_logits = q_model(images)
+                
+                # Debug: Check input tensor shapes
+                if batch_idx == 0:
+                    print(f"Debug: q_logits shape: {q_logits.shape}, targets shape: {targets.shape}")
+                    print(f"Debug: q_logits device: {q_logits.device}, targets device: {targets.device}")
 
                 corrected_logits = apply_cluster_affine(q_logits, cluster_model, gamma_dict, beta_dict, pca=pca, alpha=alpha)
+                
+                # Debug: Check corrected tensor
+                if batch_idx == 0:
+                    print(f"Debug: corrected_logits shape: {corrected_logits.shape}")
+                    print(f"Debug: corrected_logits device: {corrected_logits.device}")
+                    if torch.isnan(corrected_logits).any():
+                        print("Warning: corrected_logits contains NaN values")
+                    if torch.isinf(corrected_logits).any():
+                        print("Warning: corrected_logits contains Inf values")
 
                 acc1, acc5 = accuracy(corrected_logits, targets, topk=(1, 5))
                 total_top1 += acc1.item() * images.size(0)
