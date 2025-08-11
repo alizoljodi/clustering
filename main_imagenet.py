@@ -294,13 +294,27 @@ if __name__ == '__main__':
         """
         Build cluster affine correction model from pre-extracted logits.
         """
+        # Normalize all_q and all_fp before clustering
+        # Compute mean and std for normalization
+        q_mean = all_q.mean(dim=0, keepdim=True)
+        q_std = all_q.std(dim=0, keepdim=True, unbiased=False)
+        q_std[q_std < 1e-8] = 1e-8  # Avoid division by zero
+        
+        fp_mean = all_fp.mean(dim=0, keepdim=True)
+        fp_std = all_fp.std(dim=0, keepdim=True, unbiased=False)
+        fp_std[fp_std < 1e-8] = 1e-8  # Avoid division by zero
+        
+        # Normalize the data
+        all_q_normalized = (all_q - q_mean) / q_std
+        all_fp_normalized = (all_fp - fp_mean) / fp_std
+        
         # Optional PCA for clustering only
         pca = None
-        if pca_dim is not None and pca_dim < all_q.shape[1]:
+        if pca_dim is not None and pca_dim < all_q_normalized.shape[1]:
             pca = PCA(n_components=pca_dim, random_state=42)
-            q_features = pca.fit_transform(all_q.numpy())
+            q_features = pca.fit_transform(all_q_normalized.numpy())
         else:
-            q_features = all_q.numpy()
+            q_features = all_q_normalized.numpy()
 
         # Cluster quantized outputs
         cluster_model = KMeans(n_clusters=num_clusters, random_state=42)
@@ -318,8 +332,8 @@ if __name__ == '__main__':
                 beta_dict[cid] = torch.zeros(all_q.shape[1])
                 continue
 
-            q_c = all_q[idxs]  # [Nc, C]
-            fp_c = all_fp[idxs]  # [Nc, C]
+            q_c = all_q_normalized[idxs]  # [Nc, C]
+            fp_c = all_fp_normalized[idxs]  # [Nc, C]
 
             # Closed-form least squares: fp ≈ gamma * q + beta
             mean_q = q_c.mean(dim=0)
@@ -335,7 +349,15 @@ if __name__ == '__main__':
             gamma_dict[cid] = gamma
             beta_dict[cid] = beta
 
-        return cluster_model, gamma_dict, beta_dict, pca
+        # Store normalization parameters for later use
+        norm_params = {
+            'q_mean': q_mean,
+            'q_std': q_std,
+            'fp_mean': fp_mean,
+            'fp_std': fp_std
+        }
+        
+        return cluster_model, gamma_dict, beta_dict, pca, norm_params
 
     def apply_cluster_affine(q_logits, cluster_model, gamma_dict, beta_dict, pca=None, alpha=0.4):
         """
@@ -349,12 +371,28 @@ if __name__ == '__main__':
 
         cluster_ids = cluster_model.predict(q_np)
 
+        # Compute normalization parameters from the current input data
+        q_mean = q_logits.mean(dim=0, keepdim=True)
+        q_std = q_logits.std(dim=0, keepdim=True, unbiased=False)
+        q_std[q_std < 1e-8] = 1e-8  # Avoid division by zero
+        
+        fp_mean = q_logits.mean(dim=0, keepdim=True)  # Use q_logits as reference for fp normalization
+        fp_std = q_logits.std(dim=0, keepdim=True, unbiased=False)
+        fp_std[fp_std < 1e-8] = 1e-8  # Avoid division by zero
+
         corrected = []
         for i, q in enumerate(q_logits):
             cid = int(cluster_ids[i])
             gamma = gamma_dict[cid].to(q.device)
             beta = beta_dict[cid].to(q.device)
-            affine_corrected = q * gamma + beta
+            
+            # Normalize the current input
+            q_normalized = (q - q_mean.to(q.device)) / q_std.to(q.device)
+            # Apply correction in normalized space
+            affine_corrected_normalized = q_normalized * gamma + beta
+            # Denormalize back to original space
+            affine_corrected = affine_corrected_normalized * fp_std.to(q.device) + fp_mean.to(q.device)
+            
             blended = q + alpha * (affine_corrected - q)
             corrected.append(blended)
         return torch.stack(corrected)
@@ -405,7 +443,7 @@ if __name__ == '__main__':
                 print(f"{'='*60}")
                 
                 # Build cluster affine model
-                cluster_model, gamma_dict, beta_dict, pca = build_cluster_affine(
+                cluster_model, gamma_dict, beta_dict, pca, _ = build_cluster_affine(
                     all_q, all_fp, num_clusters=num_clusters, pca_dim=pca_dim
                 )
                 
