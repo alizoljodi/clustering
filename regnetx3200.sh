@@ -7,7 +7,8 @@
 #SBATCH --tmp=5G
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=<your-email-address>
+#SBATCH -t 7-00:00:00
+
 
 source /home/alz07xz/project/PD-Quant/pd_quant/bin/activate
-pip install scikit-learn
-python run_script.py resnet18
+python run_script.py regnetx_3200m

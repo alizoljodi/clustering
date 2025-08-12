@@ -405,22 +405,92 @@ if __name__ == '__main__':
         # Plot randomly selected values from each cluster
         plot_cluster_comparisons(all_q_logits, all_fp_logits, all_corrected_logits, 
                                all_cluster_ids, alpha, pca_dim=pca.n_components_ if pca else None, 
-                               num_clusters=cluster_model.n_clusters)
+                               num_clusters=cluster_model.n_clusters, 
+                               arch=args.arch, n_bit_w=args.n_bit_w, n_bit_a=args.n_bit_a)
         
         return total_top1 / total, total_top5 / total
     
-    def plot_cluster_comparisons(all_q_logits, all_fp_logits, all_corrected_logits, all_cluster_ids, alpha, pca_dim=None, num_clusters=None):
+    def plot_cluster_comparisons(all_q_logits, all_fp_logits, all_corrected_logits, all_cluster_ids, alpha, pca_dim=None, num_clusters=None, arch=None, n_bit_w=None, n_bit_a=None):
         """
         Plot randomly selected 5 values from each cluster comparing q_logits, fp_logits, and corrected_logits.
         Also create combined logits plot and histogram comparison.
         """
         try:
-            # Create results directory structure
+            # Create results directory structure with model parameters
             pca_suffix = f"_pca{pca_dim}" if pca_dim else ""
-            results_dir = f"results_alpha{alpha:.2f}_clusters{num_clusters}{pca_suffix}"
+            arch_suffix = f"_{arch}" if arch else ""
+            w_suffix = f"_w{n_bit_w}bit" if n_bit_w else ""
+            a_suffix = f"_a{n_bit_a}bit" if n_bit_a else ""
+            
+            results_dir = f"results_alpha{alpha:.2f}_clusters{num_clusters}{pca_suffix}{arch_suffix}{w_suffix}{a_suffix}"
             os.makedirs(results_dir, exist_ok=True)
             
             print(f"Results will be saved in: {results_dir}")
+            
+            # Save experiment parameters summary
+            params_summary = {
+                'alpha': alpha,
+                'num_clusters': num_clusters,
+                'pca_dim': pca_dim,
+                'architecture': arch,
+                'weight_bits': n_bit_w,
+                'activation_bits': n_bit_a,
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+            }
+            
+            # Save parameters to CSV
+            params_df = pd.DataFrame([params_summary])
+            params_csv_filename = os.path.join(results_dir, f"experiment_parameters.csv")
+            params_df.to_csv(params_csv_filename, index=False)
+            print(f"Experiment parameters saved as: {params_csv_filename}")
+            
+            # Create README file explaining the results
+            readme_content = f"""# Experiment Results
+
+## Parameters
+- Alpha: {alpha:.2f}
+- Number of Clusters: {num_clusters}
+- PCA Dimensions: {pca_dim if pca_dim else 'None'}
+- Architecture: {arch if arch else 'Unknown'}
+- Weight Bits: {n_bit_w if n_bit_w else 'Unknown'}
+- Activation Bits: {n_bit_a if n_bit_a else 'Unknown'}
+- Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}
+
+## Files Description
+
+### Plots (PNG)
+- `cluster_comparison.png` - Cluster comparison plots (one row per cluster, 3 columns)
+- `combined_logits.png` - Combined logits visualization (all three types on same diagram)
+- `quantized_histogram.png` - Quantized logits histogram with entropy
+- `fullprecision_histogram.png` - Full-precision logits histogram with entropy
+- `corrected_histogram.png` - Corrected logits histogram with entropy
+- `cluster_visualization_tsne.png` - 2D t-SNE cluster visualization
+- `cluster_visualization_pca.png` - 2D PCA cluster visualization
+- `cluster_visualization_pca_3d.png` - 3D PCA cluster visualization
+
+### Data (CSV)
+- `experiment_parameters.csv` - All experiment parameters
+- `cluster_comparison_data.csv` - Cluster comparison data
+- `combined_logits_data.csv` - Combined logits data
+- `quantized_histogram_data.csv` - Quantized histogram data + entropy
+- `fullprecision_histogram_data.csv` - Full-precision histogram data + entropy
+- `corrected_histogram_data.csv` - Corrected histogram data + entropy
+- `cluster_visualization_tsne_data.csv` - t-SNE coordinates + cluster IDs
+- `cluster_visualization_pca_data.csv` - PCA coordinates + cluster IDs + explained variance
+- `cluster_visualization_pca_3d_data.csv` - 3D PCA coordinates + cluster IDs + explained variance
+
+## Analysis
+Use these files to analyze:
+1. How well the clustering separates different logit patterns
+2. The effectiveness of the correction method
+3. Distribution differences between quantized, full-precision, and corrected logits
+4. Entropy changes across different model configurations
+"""
+            
+            readme_filename = os.path.join(results_dir, f"README.md")
+            with open(readme_filename, 'w') as f:
+                f.write(readme_content)
+            print(f"README file created: {readme_filename}")
             
             # Concatenate all batches
             q_logits = torch.cat(all_q_logits, dim=0)
