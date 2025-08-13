@@ -144,6 +144,209 @@ def get_train_samples(train_loader, num_samples):
     return torch.cat(train_data, dim=0)[:num_samples], torch.cat(target, dim=0)[:num_samples]
 
 
+def save_logits_to_csv(all_q_logits, all_fp_logits, all_corrected_logits, results_dir, arch, n_bit_w, n_bit_a, seed, chunk_size=1000):
+    """
+    Save all logits data as CSV files for analysis.
+    Automatically uses chunking for large datasets.
+    """
+    try:
+        # Concatenate all batches
+        q_logits = torch.cat(all_q_logits, dim=0)
+        fp_logits = torch.cat(all_fp_logits, dim=0)
+        corrected_logits = torch.cat(all_corrected_logits, dim=0)
+        
+        total_samples = len(q_logits)
+        print(f"Saving logits data for {total_samples} samples...")
+        
+        # Use chunking for large datasets
+        if total_samples > chunk_size:
+            print(f"Large dataset detected ({total_samples} samples), using chunking...")
+            return save_logits_in_chunks(all_q_logits, all_fp_logits, all_corrected_logits, 
+                                      results_dir, arch, n_bit_w, n_bit_a, seed, chunk_size)
+        
+        # Create a base filename with model parameters
+        base_filename = f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}"
+        
+        # Save quantized logits
+        q_df = pd.DataFrame(q_logits.numpy())
+        q_csv_filename = os.path.join(results_dir, f"{base_filename}_quantized.csv")
+        q_df.to_csv(q_csv_filename, index=False)
+        print(f"Quantized logits saved as: {q_csv_filename}")
+        
+        # Save full-precision logits
+        fp_df = pd.DataFrame(fp_logits.numpy())
+        fp_csv_filename = os.path.join(results_dir, f"{base_filename}_fullprecision.csv")
+        fp_df.to_csv(fp_csv_filename, index=False)
+        print(f"Full-precision logits saved as: {fp_csv_filename}")
+        
+        # Save corrected logits
+        corrected_df = pd.DataFrame(corrected_logits.numpy())
+        corrected_csv_filename = os.path.join(results_dir, f"{base_filename}_corrected.csv")
+        corrected_df.to_csv(corrected_csv_filename, index=False)
+        print(f"Corrected logits saved as: {corrected_csv_filename}")
+        
+        # Save metadata about the logits
+        metadata = {
+            'architecture': arch,
+            'weight_bits': n_bit_w,
+            'activation_bits': n_bit_a,
+            'seed': seed,
+            'num_samples': total_samples,
+            'num_classes': q_logits.shape[1],
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        metadata_df = pd.DataFrame([metadata])
+        metadata_csv_filename = os.path.join(results_dir, f"{base_filename}_metadata.csv")
+        metadata_df.to_csv(metadata_csv_filename, index=False)
+        print(f"Logits metadata saved as: {metadata_csv_filename}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error saving logits to CSV: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def save_logits_in_chunks(all_q_logits, all_fp_logits, all_corrected_logits, results_dir, arch, n_bit_w, n_bit_a, seed, chunk_size=1000):
+    """
+    Save logits data in chunks to handle large datasets efficiently.
+    """
+    try:
+        # Concatenate all batches
+        q_logits = torch.cat(all_q_logits, dim=0)
+        fp_logits = torch.cat(all_fp_logits, dim=0)
+        corrected_logits = torch.cat(all_corrected_logits, dim=0)
+        
+        total_samples = len(q_logits)
+        num_chunks = (total_samples + chunk_size - 1) // chunk_size
+        
+        print(f"Saving logits data for {total_samples} samples in {num_chunks} chunks...")
+        
+        # Create a base filename with model parameters
+        base_filename = f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}"
+        
+        # Save chunked data
+        for chunk_idx in range(num_chunks):
+            start_idx = chunk_idx * chunk_size
+            end_idx = min((chunk_idx + 1) * chunk_size, total_samples)
+            
+            chunk_suffix = f"_chunk{chunk_idx+1:03d}_of_{num_chunks:03d}"
+            
+            # Save quantized logits chunk
+            q_chunk = q_logits[start_idx:end_idx]
+            q_df = pd.DataFrame(q_chunk.numpy())
+            q_csv_filename = os.path.join(results_dir, f"{base_filename}_quantized{chunk_suffix}.csv")
+            q_df.to_csv(q_csv_filename, index=False)
+            
+            # Save full-precision logits chunk
+            fp_chunk = fp_logits[start_idx:end_idx]
+            fp_df = pd.DataFrame(fp_chunk.numpy())
+            fp_csv_filename = os.path.join(results_dir, f"{base_filename}_fullprecision{chunk_suffix}.csv")
+            fp_df.to_csv(fp_csv_filename, index=False)
+            
+            # Save corrected logits chunk
+            corrected_chunk = corrected_logits[start_idx:end_idx]
+            corrected_df = pd.DataFrame(corrected_chunk.numpy())
+            corrected_csv_filename = os.path.join(results_dir, f"{base_filename}_corrected{chunk_suffix}.csv")
+            corrected_df.to_csv(corrected_csv_filename, index=False)
+            
+            print(f"  Chunk {chunk_idx+1}/{num_chunks}: {start_idx}-{end_idx} samples saved")
+        
+        # Save metadata about the chunked logits
+        metadata = {
+            'architecture': arch,
+            'weight_bits': n_bit_w,
+            'activation_bits': n_bit_a,
+            'seed': seed,
+            'total_samples': total_samples,
+            'num_classes': q_logits.shape[1],
+            'chunk_size': chunk_size,
+            'num_chunks': num_chunks,
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        metadata_df = pd.DataFrame([metadata])
+        metadata_csv_filename = os.path.join(results_dir, f"{base_filename}_chunked_metadata.csv")
+        metadata_df.to_csv(metadata_csv_filename, index=False)
+        print(f"Chunked logits metadata saved as: {metadata_csv_filename}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error saving chunked logits to CSV: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def create_logits_summary_csv(arch, n_bit_w, n_bit_a, seed, results_summary):
+    """
+    Create a summary CSV file listing all saved logits files for this model configuration.
+    """
+    try:
+        summary_dir = f"logits_summary_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}"
+        os.makedirs(summary_dir, exist_ok=True)
+        
+        # Create summary dataframe
+        summary_data = []
+        for result in results_summary:
+            alpha = result['alpha']
+            num_clusters = result['num_clusters']
+            pca_dim = result['pca_dim']
+            top1_acc = result['top1_accuracy']
+            top5_acc = result['top5_accuracy']
+            
+            # Define the expected results directory
+            results_dir = f"results_alpha{alpha:.2f}_clusters{num_clusters}_pca{pca_dim}_{arch}_w{n_bit_w}bit_a{n_bit_a}bit"
+            
+            # List expected CSV files
+            base_filename = f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}"
+            
+            summary_data.append({
+                'alpha': alpha,
+                'num_clusters': num_clusters,
+                'pca_dim': pca_dim,
+                'top1_accuracy': top1_acc,
+                'top5_accuracy': top5_acc,
+                'results_directory': results_dir,
+                'quantized_logits_file': f"{base_filename}_quantized.csv",
+                'fullprecision_logits_file': f"{base_filename}_fullprecision.csv",
+                'corrected_logits_file': f"{base_filename}_corrected.csv",
+                'metadata_file': f"{base_filename}_metadata.csv"
+            })
+        
+        # Add initial logits entry
+        initial_results_dir = f"initial_logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}"
+        summary_data.append({
+            'alpha': 'initial',
+            'num_clusters': 'N/A',
+            'pca_dim': 'N/A',
+            'top1_accuracy': 'N/A',
+            'top5_accuracy': 'N/A',
+            'results_directory': initial_results_dir,
+            'quantized_logits_file': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_quantized.csv",
+            'fullprecision_logits_file': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_fullprecision.csv",
+            'corrected_logits_file': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_corrected.csv",
+            'metadata_file': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_metadata.csv"
+        })
+        
+        summary_df = pd.DataFrame(summary_data)
+        summary_csv_filename = os.path.join(summary_dir, f"logits_summary_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}.csv")
+        summary_df.to_csv(summary_csv_filename, index=False)
+        
+        print(f"Logits summary saved as: {summary_csv_filename}")
+        return summary_csv_filename
+        
+    except Exception as e:
+        print(f"Error creating logits summary CSV: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='running parameters',
@@ -407,6 +610,13 @@ if __name__ == '__main__':
                                all_cluster_ids, alpha, pca_dim=pca.n_components_ if pca else None, 
                                num_clusters=cluster_model.n_clusters, 
                                arch=args.arch, n_bit_w=args.n_bits_w, n_bit_a=args.n_bits_a)
+        
+        # Save logits data as CSV files
+        results_dir = f"results_alpha{alpha:.2f}_clusters{cluster_model.n_clusters}_pca{pca.n_components_ if pca else 'none'}_{args.arch}_w{args.n_bits_w}bit_a{args.n_bits_a}bit"
+        os.makedirs(results_dir, exist_ok=True)
+        
+        save_logits_to_csv(all_q_logits, all_fp_logits, all_corrected_logits, 
+                          results_dir, args.arch, args.n_bits_w, args.n_bits_a, args.seed)
         
         return total_top1 / total, total_top5 / total
     
@@ -915,6 +1125,20 @@ Use these files to analyze:
     print("Extracting logits from quantized and full-precision models...")
     all_q, all_fp = extract_model_logits(qnn, fp_model, train_loader, device)
     
+    # Save initial extracted logits for all models
+    initial_results_dir = f"initial_logits_{args.arch}_w{args.n_bits_w}bit_a{args.n_bits_a}bit_seed{args.seed}"
+    os.makedirs(initial_results_dir, exist_ok=True)
+    
+    # Convert to list format for the save function
+    all_q_list = [all_q]
+    all_fp_list = [all_fp]
+    all_corrected_list = [all_q]  # Use quantized as placeholder for corrected
+    
+    save_logits_to_csv(all_q_list, all_fp_list, all_corrected_list, 
+                      initial_results_dir, args.arch, args.n_bits_w, args.n_bits_a, args.seed)
+    
+    print(f"Initial logits saved in: {initial_results_dir}")
+    
     # Determine parameter lists for testing
     alpha_list = args.alpha_list if args.alpha_list else [args.alpha]
     num_clusters_list = args.num_clusters_list if args.num_clusters_list else [args.num_clusters]
@@ -978,4 +1202,12 @@ Use these files to analyze:
     print(f"  PCA_dim: {best_result['pca_dim']}")
     print(f"  Top-1 Accuracy: {best_result['top1_accuracy']:.2f}%")
     print(f"  Top-5 Accuracy: {best_result['top5_accuracy']:.2f}%")
+    
+    # Create summary CSV of all saved logits files
+    print(f"\nCreating logits summary...")
+    summary_csv = create_logits_summary_csv(args.arch, args.n_bits_w, args.n_bits_a, args.seed, results)
+    if summary_csv:
+        print(f"Logits summary created successfully: {summary_csv}")
+    else:
+        print("Failed to create logits summary")
 
