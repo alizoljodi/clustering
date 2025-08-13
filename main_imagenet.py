@@ -406,7 +406,7 @@ if __name__ == '__main__':
         plot_cluster_comparisons(all_q_logits, all_fp_logits, all_corrected_logits, 
                                all_cluster_ids, alpha, pca_dim=pca.n_components_ if pca else None, 
                                num_clusters=cluster_model.n_clusters, 
-                               arch=args.arch, n_bit_w=args.n_bit_w, n_bit_a=args.n_bit_a)
+                               arch=args.arch, n_bit_w=args.n_bits_w, n_bit_a=args.n_bits_a)
         
         return total_top1 / total, total_top5 / total
     
