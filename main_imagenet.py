@@ -723,6 +723,95 @@ if __name__ == '__main__':
         save_logits_statistics_as_tensor(all_corrected_logits, results_dir, 'corrected', args.arch, args.n_bits_w, args.n_bits_a, args.seed)
         save_logits_statistics_as_tensor(all_affine_corrected_logits, results_dir, 'affine_corrected', args.arch, args.n_bits_w, args.n_bits_a, args.seed)
         
+        # Save histogram data as CSV (without plotting)
+        print(f"\nSaving histogram data as CSV...")
+        
+        # Concatenate all batches for histogram analysis
+        q_logits = torch.cat(all_q_logits, dim=0)
+        fp_logits = torch.cat(all_fp_logits, dim=0)
+        corrected_logits = torch.cat(all_corrected_logits, dim=0)
+        affine_corrected_logits = torch.cat(all_affine_corrected_logits, dim=0)
+        
+        # 1. Quantized logits histogram data
+        q_logits_flat = q_logits.flatten().numpy()
+        hist_q, bins_q = np.histogram(q_logits_flat, bins=100, density=True)
+        hist_q = hist_q[hist_q > 0]  # Remove zero bins for entropy calculation
+        entropy_q = -np.sum(hist_q * np.log2(hist_q))
+        
+        # Save quantized logits histogram data as CSV
+        hist_q, bins_q = np.histogram(q_logits_flat, bins=100)
+        hist_df_q = pd.DataFrame({
+            'bin_center': (bins_q[:-1] + bins_q[1:]) / 2,
+            'frequency': hist_q,
+            'bin_start': bins_q[:-1],
+            'bin_end': bins_q[1:],
+            'entropy': entropy_q
+        })
+        csv_q_hist_filename = os.path.join(results_dir, f"quantized_histogram_data.csv")
+        hist_df_q.to_csv(csv_q_hist_filename, index=False)
+        print(f"Quantized histogram data saved as: {csv_q_hist_filename}")
+        print(f"Quantized logits entropy: {entropy_q:.4f}")
+        
+        # 2. Full-precision logits histogram data
+        fp_logits_flat = fp_logits.flatten().numpy()
+        hist_fp, bins_fp = np.histogram(fp_logits_flat, bins=100, density=True)
+        hist_fp = hist_fp[hist_fp > 0]  # Remove zero bins for entropy calculation
+        entropy_fp = -np.sum(hist_fp * np.log2(hist_fp))
+        
+        # Save full-precision logits histogram data as CSV
+        hist_fp, bins_fp = np.histogram(fp_logits_flat, bins=100)
+        hist_df_fp = pd.DataFrame({
+            'bin_center': (bins_fp[:-1] + bins_fp[1:]) / 2,
+            'frequency': hist_fp,
+            'bin_start': bins_fp[:-1],
+            'bin_end': bins_fp[1:],
+            'entropy': entropy_fp
+        })
+        csv_fp_hist_filename = os.path.join(results_dir, f"fullprecision_histogram_data.csv")
+        hist_df_fp.to_csv(csv_fp_hist_filename, index=False)
+        print(f"Full-precision histogram data saved as: {csv_fp_hist_filename}")
+        print(f"Full-precision logits entropy: {entropy_fp:.4f}")
+        
+        # 3. Corrected logits histogram data
+        corrected_logits_flat = corrected_logits.flatten().numpy()
+        hist_corr, bins_corr = np.histogram(corrected_logits_flat, bins=100, density=True)
+        hist_corr = hist_corr[hist_corr > 0]  # Remove zero bins for entropy calculation
+        entropy_corr = -np.sum(hist_corr * np.log2(hist_corr))
+        
+        # Save corrected logits histogram data as CSV
+        hist_corr, bins_corr = np.histogram(corrected_logits_flat, bins=100)
+        hist_df_corr = pd.DataFrame({
+            'bin_center': (bins_corr[:-1] + bins_corr[1:]) / 2,
+            'frequency': hist_corr,
+            'bin_start': bins_corr[:-1],
+            'bin_end': bins_corr[1:],
+            'entropy': entropy_corr
+        })
+        csv_corr_hist_filename = os.path.join(results_dir, f"corrected_histogram_data.csv")
+        hist_df_corr.to_csv(csv_corr_hist_filename, index=False)
+        print(f"Corrected histogram data saved as: {csv_corr_hist_filename}")
+        print(f"Corrected logits entropy: {entropy_corr:.4f}")
+        
+        # 4. Affine corrected logits histogram data
+        affine_corrected_logits_flat = affine_corrected_logits.flatten().numpy()
+        hist_affine, bins_affine = np.histogram(affine_corrected_logits_flat, bins=100, density=True)
+        hist_affine = hist_affine[hist_affine > 0]  # Remove zero bins for entropy calculation
+        entropy_affine = -np.sum(hist_affine * np.log2(hist_affine))
+        
+        # Save affine corrected logits histogram data as CSV
+        hist_affine, bins_affine = np.histogram(affine_corrected_logits_flat, bins=100)
+        hist_df_affine = pd.DataFrame({
+            'bin_center': (bins_affine[:-1] + bins_affine[1:]) / 2,
+            'frequency': hist_affine,
+            'bin_start': bins_affine[:-1],
+            'bin_end': bins_affine[1:],
+            'entropy': entropy_affine
+        })
+        csv_affine_hist_filename = os.path.join(results_dir, f"affine_corrected_histogram_data.csv")
+        hist_df_affine.to_csv(csv_affine_hist_filename, index=False)
+        print(f"Affine corrected histogram data saved as: {csv_affine_hist_filename}")
+        print(f"Affine corrected logits entropy: {entropy_affine:.4f}")
+        
         return total_top1 / total, total_top5 / total
     
     def plot_cluster_comparisons(all_q_logits, all_fp_logits, all_corrected_logits, all_affine_corrected_logits, all_cluster_ids, alpha, pca_dim=None, num_clusters=None, arch=None, n_bit_w=None, n_bit_a=None):
