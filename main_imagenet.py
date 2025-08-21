@@ -11,8 +11,6 @@ import random
 import time
 import hubconf  # noqa: F401
 import copy
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import pandas as pd
 from quant import (
     block_reconstruction,
@@ -330,7 +328,11 @@ def create_logits_summary_csv(arch, n_bit_w, n_bit_a, seed, results_summary):
                 'fullprecision_logits_file': f"{base_filename}_fullprecision.csv",
                 'corrected_logits_file': f"{base_filename}_corrected.csv",
                 'affine_corrected_logits_file': f"{base_filename}_affine_corrected.csv",
-                'metadata_file': f"{base_filename}_metadata.csv"
+                'metadata_file': f"{base_filename}_metadata.csv",
+                'quantized_statistics_tensor': f"{base_filename}_quantized_statistics.pt",
+                'fullprecision_statistics_tensor': f"{base_filename}_fullprecision_statistics.pt",
+                'corrected_statistics_tensor': f"{base_filename}_corrected_statistics.pt",
+                'affine_corrected_statistics_tensor': f"{base_filename}_affine_corrected_statistics.pt"
             })
         
         # Add initial logits entry
@@ -346,7 +348,11 @@ def create_logits_summary_csv(arch, n_bit_w, n_bit_a, seed, results_summary):
             'fullprecision_logits_file': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_fullprecision.csv",
             'corrected_logits_file': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_corrected.csv",
             'affine_corrected_logits_file': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_affine_corrected.csv",
-            'metadata_file': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_metadata.csv"
+            'metadata_file': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_metadata.csv",
+            'quantized_statistics_tensor': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_quantized_statistics.pt",
+            'fullprecision_statistics_tensor': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_fullprecision_statistics.pt",
+            'corrected_statistics_tensor': 'N/A',
+            'affine_corrected_statistics_tensor': 'N/A'
         })
         
         summary_df = pd.DataFrame(summary_data)
@@ -358,6 +364,77 @@ def create_logits_summary_csv(arch, n_bit_w, n_bit_a, seed, results_summary):
         
     except Exception as e:
         print(f"Error creating logits summary CSV: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def save_logits_statistics_as_tensor(all_logits_list, results_dir, logits_type, arch, n_bit_w, n_bit_a, seed):
+    """
+    Save logits statistics as a tensor with 1000 rows containing mean and standard deviation for each entry.
+    
+    Args:
+        all_logits_list: List of logits tensors from batches
+        results_dir: Directory to save the results
+        logits_type: Type of logits (e.g., 'quantized', 'fullprecision', 'corrected', 'affine_corrected')
+        arch: Model architecture
+        n_bit_w: Weight bit width
+        n_bit_a: Activation bit width
+        seed: Random seed
+    """
+    try:
+        # Concatenate all batches
+        all_logits = torch.cat(all_logits_list, dim=0)  # [N, C]
+        
+        total_samples = all_logits.shape[0]
+        num_classes = all_logits.shape[1]
+        
+        print(f"Computing statistics for {logits_type} logits: {total_samples} samples, {num_classes} classes")
+        
+        # Compute mean and standard deviation across all samples for each class
+        mean_logits = all_logits.mean(dim=0)  # [C]
+        std_logits = all_logits.std(dim=0, unbiased=False)  # [C]
+        
+        # Create statistics tensor with 1000 rows
+        # Each row contains: [class_id, mean_value, std_value]
+        stats_tensor = torch.zeros(1000, 3)
+        
+        # Fill the first num_classes rows with actual statistics
+        stats_tensor[:num_classes, 0] = torch.arange(num_classes)  # class_id
+        stats_tensor[:num_classes, 1] = mean_logits  # mean_value
+        stats_tensor[:num_classes, 2] = std_logits   # std_value
+        
+        # Fill remaining rows with zeros (padding)
+        stats_tensor[num_classes:, 0] = -1  # -1 indicates no class
+        
+        # Save as tensor file
+        base_filename = f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}"
+        tensor_filename = os.path.join(results_dir, f"{base_filename}_{logits_type}_statistics.pt")
+        torch.save(stats_tensor, tensor_filename)
+        print(f"{logits_type.capitalize()} logits statistics saved as tensor: {tensor_filename}")
+        
+        # Also save as CSV for easy viewing
+        csv_filename = os.path.join(results_dir, f"{base_filename}_{logits_type}_statistics.csv")
+        stats_df = pd.DataFrame({
+            'class_id': stats_tensor[:num_classes, 0].numpy(),
+            'mean_value': stats_tensor[:num_classes, 1].numpy(),
+            'std_value': stats_tensor[:num_classes, 2].numpy()
+        })
+        stats_df.to_csv(csv_filename, index=False)
+        print(f"{logits_type.capitalize()} logits statistics saved as CSV: {csv_filename}")
+        
+        # Print summary statistics
+        print(f"  Mean of means: {mean_logits.mean():.6f}")
+        print(f"  Mean of stds: {std_logits.mean():.6f}")
+        print(f"  Max mean: {mean_logits.max():.6f}")
+        print(f"  Min mean: {mean_logits.min():.6f}")
+        print(f"  Max std: {std_logits.max():.6f}")
+        print(f"  Min std: {std_logits.min():.6f}")
+        
+        return stats_tensor
+        
+    except Exception as e:
+        print(f"Error saving {logits_type} logits statistics: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -627,7 +704,7 @@ if __name__ == '__main__':
         print(f"[Alpha={alpha:.2f}] Top-5 Accuracy: {total_top5 / total:.2f}%")
         
         # Plot randomly selected values from each cluster
-        '''plot_cluster_comparisons(all_q_logits, all_fp_logits, all_corrected_logits, 
+        '''plot_cluster_comparisons(all_q_logits, all_fp_logits, all_corrected_logits, all_affine_corrected_logits,
                                all_cluster_ids, alpha, pca_dim=pca.n_components_ if pca else None, 
                                num_clusters=cluster_model.n_clusters, 
                                arch=args.arch, n_bit_w=args.n_bits_w, n_bit_a=args.n_bits_a)'''
@@ -636,12 +713,19 @@ if __name__ == '__main__':
         results_dir = f"results_alpha{alpha:.2f}_clusters{cluster_model.n_clusters}_pca{pca.n_components_ if pca else 'none'}_{args.arch}_w{args.n_bits_w}bit_a{args.n_bits_a}bit"
         os.makedirs(results_dir, exist_ok=True)
         
-        save_logits_to_csv(all_q_logits, all_fp_logits, all_corrected_logits, all_affine_corrected_logits,
-                          results_dir, args.arch, args.n_bits_w, args.n_bits_a, args.seed)
+        '''save_logits_to_csv(all_q_logits, all_fp_logits, all_corrected_logits, all_affine_corrected_logits,
+                          results_dir, args.arch, args.n_bits_w, args.n_bits_a, args.seed)'''
+        
+        # Save logits statistics as tensors for testing data only
+        print(f"\nSaving logits statistics as tensors for testing data...")
+        save_logits_statistics_as_tensor(all_q_logits, results_dir, 'quantized', args.arch, args.n_bits_w, args.n_bits_a, args.seed)
+        save_logits_statistics_as_tensor(all_fp_logits, results_dir, 'fullprecision', args.arch, args.n_bits_w, args.n_bits_a, args.seed)
+        save_logits_statistics_as_tensor(all_corrected_logits, results_dir, 'corrected', args.arch, args.n_bits_w, args.n_bits_a, args.seed)
+        save_logits_statistics_as_tensor(all_affine_corrected_logits, results_dir, 'affine_corrected', args.arch, args.n_bits_w, args.n_bits_a, args.seed)
         
         return total_top1 / total, total_top5 / total
     
-    def plot_cluster_comparisons(all_q_logits, all_fp_logits, all_corrected_logits, all_cluster_ids, alpha, pca_dim=None, num_clusters=None, arch=None, n_bit_w=None, n_bit_a=None):
+    def plot_cluster_comparisons(all_q_logits, all_fp_logits, all_corrected_logits, all_affine_corrected_logits, all_cluster_ids, alpha, pca_dim=None, num_clusters=None, arch=None, n_bit_w=None, n_bit_a=None):
         """
         Plot randomly selected 5 values from each cluster comparing q_logits, fp_logits, and corrected_logits.
         Also create combined logits plot and histogram comparison.
@@ -689,16 +773,6 @@ if __name__ == '__main__':
 
 ## Files Description
 
-### Plots (PNG)
-- `cluster_comparison.png` - Cluster comparison plots (one row per cluster, 3 columns)
-- `combined_logits.png` - Combined logits visualization (all three types on same diagram)
-- `quantized_histogram.png` - Quantized logits histogram with entropy
-- `fullprecision_histogram.png` - Full-precision logits histogram with entropy
-- `corrected_histogram.png` - Corrected logits histogram with entropy
-- `cluster_visualization_tsne.png` - 2D t-SNE cluster visualization
-- `cluster_visualization_pca.png` - 2D PCA cluster visualization
-- `cluster_visualization_pca_3d.png` - 3D PCA cluster visualization
-
 ### Data (CSV)
 - `experiment_parameters.csv` - All experiment parameters
 - `cluster_comparison_data.csv` - Cluster comparison data
@@ -706,16 +780,19 @@ if __name__ == '__main__':
 - `quantized_histogram_data.csv` - Quantized histogram data + entropy
 - `fullprecision_histogram_data.csv` - Full-precision histogram data + entropy
 - `corrected_histogram_data.csv` - Corrected histogram data + entropy
+- `affine_corrected_histogram_data.csv` - Affine corrected histogram data + entropy
 - `cluster_visualization_tsne_data.csv` - t-SNE coordinates + cluster IDs
 - `cluster_visualization_pca_data.csv` - PCA coordinates + cluster IDs + explained variance
 - `cluster_visualization_pca_3d_data.csv` - 3D PCA coordinates + cluster IDs + explained variance
 
 ## Analysis
-Use these files to analyze:
+Use these CSV files to analyze:
 1. How well the clustering separates different logit patterns
 2. The effectiveness of the correction method
-3. Distribution differences between quantized, full-precision, and corrected logits
+3. Distribution differences between quantized, full-precision, corrected, and affine corrected logits
 4. Entropy changes across different model configurations
+5. Impact of affine transformation before alpha blending
+6. Cluster structure and relationships using t-SNE and PCA coordinates
 """
             
             readme_filename = os.path.join(results_dir, f"README.md")
@@ -727,81 +804,34 @@ Use these files to analyze:
             q_logits = torch.cat(all_q_logits, dim=0)
             fp_logits = torch.cat(all_fp_logits, dim=0)
             corrected_logits = torch.cat(all_corrected_logits, dim=0)
+            affine_corrected_logits = torch.cat(all_affine_corrected_logits, dim=0)
             cluster_ids = np.concatenate(all_cluster_ids)
             
-            print(f"Plotting data for {len(cluster_ids)} total samples")
+            print(f"Processing data for {len(cluster_ids)} total samples")
             
             # Get unique cluster IDs
             unique_clusters = np.unique(cluster_ids)
             num_clusters_actual = len(unique_clusters)
             
-            # Create subplots: one row per cluster, 3 columns for q, fp, corrected
-            fig, axes = plt.subplots(num_clusters_actual, 3, figsize=(15, 5*num_clusters_actual))
-            if num_clusters_actual == 1:
-                axes = axes.reshape(1, -1)
+            print(f"Found {num_clusters_actual} unique clusters")
             
-            # Set figure title
-            pca_info = f" (PCA: {pca_dim})" if pca_dim else ""
-            fig.suptitle(f'Cluster Comparison: Quantized vs Full-Precision vs Corrected Logits (α={alpha:.2f}){pca_info}', 
-                         fontsize=16, y=0.98)
+            # Prepare data for analysis (use a subset if too large)
+            max_samples = 10000  # Limit samples for t-SNE performance
+            if len(q_logits) > max_samples:
+                sample_indices = np.random.choice(len(q_logits), max_samples, replace=False)
+                q_logits_viz = q_logits[sample_indices].numpy()
+                fp_logits_viz = fp_logits[sample_indices].numpy()
+                corrected_logits_viz = corrected_logits[sample_indices].numpy()
+                affine_corrected_logits_viz = affine_corrected_logits[sample_indices].numpy()
+                cluster_ids_viz = cluster_ids[sample_indices]
+            else:
+                q_logits_viz = q_logits.numpy()
+                fp_logits_viz = fp_logits.numpy()
+                corrected_logits_viz = corrected_logits.numpy()
+                affine_corrected_logits_viz = affine_corrected_logits.numpy()
+                cluster_ids_viz = cluster_ids
             
-            # For each cluster
-            for i, cluster_id in enumerate(unique_clusters):
-                # Get indices for this cluster
-                cluster_mask = cluster_ids == cluster_id
-                cluster_indices = np.where(cluster_mask)[0]
-                
-                print(f"Cluster {cluster_id}: {len(cluster_indices)} samples")
-                
-                # Randomly select 5 samples from this cluster
-                if len(cluster_indices) >= 5:
-                    selected_indices = np.random.choice(cluster_indices, 5, replace=False)
-                else:
-                    selected_indices = cluster_indices
-                
-                # Plot quantized logits
-                ax1 = axes[i, 0]
-                q_data = q_logits[selected_indices].numpy()
-                ax1.plot(q_data.T, 'b-', alpha=0.7, linewidth=1)
-                ax1.set_title(f'Cluster {cluster_id}: Quantized Logits ({len(selected_indices)} samples)')
-                ax1.set_xlabel('Class Index')
-                ax1.set_ylabel('Logit Value')
-                ax1.grid(True, alpha=0.3)
-                
-                # Plot full-precision logits
-                ax2 = axes[i, 1]
-                fp_data = fp_logits[selected_indices].numpy()
-                ax2.plot(fp_data.T, 'g-', alpha=0.7, linewidth=1)
-                ax2.set_title(f'Cluster {cluster_id}: Full-Precision Logits ({len(selected_indices)} samples)')
-                ax2.set_xlabel('Class Index')
-                ax2.set_ylabel('Logit Value')
-                ax2.grid(True, alpha=0.3)
-                
-                # Plot corrected logits
-                ax3 = axes[i, 2]
-                corrected_data = corrected_logits[selected_indices].numpy()
-                ax3.plot(corrected_data.T, 'r-', alpha=0.7, linewidth=1)
-                ax3.set_title(f'Cluster {cluster_id}: Corrected Logits ({len(selected_indices)} samples)')
-                ax3.set_xlabel('Class Index')
-                ax3.set_ylabel('Logit Value')
-                ax3.grid(True, alpha=0.3)
-                
-                # Add legend for this row
-                legend_elements = [
-                    mpatches.Patch(color='blue', label='Quantized'),
-                    mpatches.Patch(color='green', label='Full-Precision'),
-                    mpatches.Patch(color='red', label='Corrected')
-                ]
-                ax3.legend(handles=legend_elements, loc='upper right')
-            
-            plt.tight_layout()
-            
-            # Save the cluster comparison plot
-            filename = os.path.join(results_dir, f"cluster_comparison.png")
-            plt.savefig(filename, dpi=300, bbox_inches='tight')
-            print(f"Cluster comparison plot saved as: {filename}")
-            
-            # Save cluster comparison data as CSV
+            # Save cluster comparison data as CSV (without plotting)
             cluster_data = []
             for i, cluster_id in enumerate(unique_clusters):
                 cluster_mask = cluster_ids == cluster_id
@@ -816,6 +846,7 @@ Use these files to analyze:
                     q_vals = q_logits[idx].numpy()
                     fp_vals = fp_logits[idx].numpy()
                     corr_vals = corrected_logits[idx].numpy()
+                    affine_corr_vals = affine_corrected_logits[idx].numpy()
                     
                     for class_idx in range(len(q_vals)):
                         cluster_data.append({
@@ -824,7 +855,8 @@ Use these files to analyze:
                             'class_index': class_idx,
                             'quantized_logit': q_vals[class_idx],
                             'fullprecision_logit': fp_vals[class_idx],
-                            'corrected_logit': corr_vals[class_idx]
+                            'corrected_logit': corr_vals[class_idx],
+                            'affine_corrected_logit': affine_corr_vals[class_idx]
                         })
             
             # Save cluster comparison CSV
@@ -833,43 +865,15 @@ Use these files to analyze:
             cluster_df.to_csv(csv_filename, index=False)
             print(f"Cluster comparison data saved as: {csv_filename}")
             
-            plt.show()
-            
-            # Create combined logits plot (all three types on same diagram)
-            plt.figure(figsize=(12, 8))
-            
-            # Randomly select 100 samples for visualization (to avoid overcrowding)
-            if len(q_logits) > 100:
-                sample_indices = np.random.choice(len(q_logits), 100, replace=False)
-            else:
-                sample_indices = np.arange(len(q_logits))
-            
-            # Plot all three logit types on the same diagram
-            for idx in sample_indices:
-                # Quantized logits (blue)
-                plt.plot(q_logits[idx].numpy(), 'b-', alpha=0.3, linewidth=0.8, label='Quantized' if idx == sample_indices[0] else "")
-                # Full-precision logits (green)
-                plt.plot(fp_logits[idx].numpy(), 'g-', alpha=0.3, linewidth=0.8, label='Full-Precision' if idx == sample_indices[0] else "")
-                # Corrected logits (red)
-                plt.plot(corrected_logits[idx].numpy(), 'r-', alpha=0.3, linewidth=0.8, label='Corrected' if idx == sample_indices[0] else "")
-            
-            plt.title(f'Combined Logits Comparison (α={alpha:.2f}){pca_info}', fontsize=16)
-            plt.xlabel('Class Index')
-            plt.ylabel('Logit Value')
-            plt.grid(True, alpha=0.3)
-            plt.legend()
-            
-            # Save the combined logits plot
-            filename_combined = os.path.join(results_dir, f"combined_logits.png")
-            plt.savefig(filename_combined, dpi=300, bbox_inches='tight')
-            print(f"Combined logits plot saved as: {filename_combined}")
-            
-            # Save combined logits data as CSV
+            # Save combined logits data as CSV (without plotting)
             combined_data = []
+            sample_indices = np.random.choice(len(q_logits), min(100, len(q_logits)), replace=False)
+            
             for idx in sample_indices:
                 q_vals = q_logits[idx].numpy()
                 fp_vals = fp_logits[idx].numpy()
                 corr_vals = corrected_logits[idx].numpy()
+                affine_corr_vals = affine_corrected_logits[idx].numpy()
                 
                 for class_idx in range(len(q_vals)):
                     combined_data.append({
@@ -877,7 +881,8 @@ Use these files to analyze:
                         'class_index': class_idx,
                         'quantized_logit': q_vals[class_idx],
                         'fullprecision_logit': fp_vals[class_idx],
-                        'corrected_logit': corr_vals[class_idx]
+                        'corrected_logit': corr_vals[class_idx],
+                        'affine_corrected_logit': affine_corr_vals[class_idx]
                     })
             
             # Save combined logits CSV
@@ -886,28 +891,12 @@ Use these files to analyze:
             combined_df.to_csv(csv_combined_filename, index=False)
             print(f"Combined logits data saved as: {csv_combined_filename}")
             
-            plt.show()
-            
-            # Create three separate histogram plots
-            # 1. Quantized logits histogram
-            plt.figure(figsize=(10, 6))
+            # Create histogram data as CSV (without plotting)
+            # 1. Quantized logits histogram data
             q_logits_flat = q_logits.flatten().numpy()
-            plt.hist(q_logits_flat, bins=100, alpha=0.8, color='blue', edgecolor='black', linewidth=0.5)
-            
-            # Calculate entropy for quantized logits
             hist_q, bins_q = np.histogram(q_logits_flat, bins=100, density=True)
             hist_q = hist_q[hist_q > 0]  # Remove zero bins for entropy calculation
             entropy_q = -np.sum(hist_q * np.log2(hist_q))
-            
-            plt.title(f'Quantized Logits Distribution (α={alpha:.2f}){pca_info}\nEntropy: {entropy_q:.4f}', fontsize=16)
-            plt.xlabel('Logit Value')
-            plt.ylabel('Frequency')
-            plt.grid(True, alpha=0.3)
-            
-            # Save the quantized logits histogram
-            filename_q_hist = os.path.join(results_dir, f"quantized_histogram.png")
-            plt.savefig(filename_q_hist, dpi=300, bbox_inches='tight')
-            print(f"Quantized logits histogram saved as: {filename_q_hist}")
             
             # Save quantized logits histogram data as CSV
             hist_q, bins_q = np.histogram(q_logits_flat, bins=100)
@@ -923,27 +912,11 @@ Use these files to analyze:
             print(f"Quantized histogram data saved as: {csv_q_hist_filename}")
             print(f"Quantized logits entropy: {entropy_q:.4f}")
             
-            plt.show()
-            
-            # 2. Full-precision logits histogram
-            plt.figure(figsize=(10, 6))
+            # 2. Full-precision logits histogram data
             fp_logits_flat = fp_logits.flatten().numpy()
-            plt.hist(fp_logits_flat, bins=100, alpha=0.8, color='green', edgecolor='black', linewidth=0.5)
-            
-            # Calculate entropy for full-precision logits
             hist_fp, bins_fp = np.histogram(fp_logits_flat, bins=100, density=True)
             hist_fp = hist_fp[hist_fp > 0]  # Remove zero bins for entropy calculation
             entropy_fp = -np.sum(hist_fp * np.log2(hist_fp))
-            
-            plt.title(f'Full-Precision Logits Distribution (α={alpha:.2f}){pca_info}\nEntropy: {entropy_fp:.4f}', fontsize=16)
-            plt.xlabel('Logit Value')
-            plt.ylabel('Frequency')
-            plt.grid(True, alpha=0.3)
-            
-            # Save the full-precision logits histogram
-            filename_fp_hist = os.path.join(results_dir, f"fullprecision_histogram.png")
-            plt.savefig(filename_fp_hist, dpi=300, bbox_inches='tight')
-            print(f"Full-precision logits histogram saved as: {filename_fp_hist}")
             
             # Save full-precision logits histogram data as CSV
             hist_fp, bins_fp = np.histogram(fp_logits_flat, bins=100)
@@ -959,27 +932,11 @@ Use these files to analyze:
             print(f"Full-precision histogram data saved as: {csv_fp_hist_filename}")
             print(f"Full-precision logits entropy: {entropy_fp:.4f}")
             
-            plt.show()
-            
-            # 3. Corrected logits histogram
-            plt.figure(figsize=(10, 6))
+            # 3. Corrected logits histogram data
             corrected_logits_flat = corrected_logits.flatten().numpy()
-            plt.hist(corrected_logits_flat, bins=100, alpha=0.8, color='red', edgecolor='black', linewidth=0.6)
-            
-            # Calculate entropy for corrected logits
             hist_corr, bins_corr = np.histogram(corrected_logits_flat, bins=100, density=True)
             hist_corr = hist_corr[hist_corr > 0]  # Remove zero bins for entropy calculation
             entropy_corr = -np.sum(hist_corr * np.log2(hist_corr))
-            
-            plt.title(f'Corrected Logits Distribution (α={alpha:.2f}){pca_info}\nEntropy: {entropy_corr:.4f}', fontsize=16)
-            plt.xlabel('Logit Value')
-            plt.ylabel('Frequency')
-            plt.grid(True, alpha=0.3)
-            
-            # Save the corrected logits histogram
-            filename_corr_hist = os.path.join(results_dir, f"corrected_histogram.png")
-            plt.savefig(filename_corr_hist, dpi=300, bbox_inches='tight')
-            print(f"Corrected logits histogram saved as: {filename_corr_hist}")
             
             # Save corrected logits histogram data as CSV
             hist_corr, bins_corr = np.histogram(corrected_logits_flat, bins=100)
@@ -995,45 +952,33 @@ Use these files to analyze:
             print(f"Corrected histogram data saved as: {csv_corr_hist_filename}")
             print(f"Corrected logits entropy: {entropy_corr:.4f}")
             
-            plt.show()
+            # 4. Affine corrected logits histogram data
+            affine_corrected_logits_flat = affine_corrected_logits.flatten().numpy()
+            hist_affine, bins_affine = np.histogram(affine_corrected_logits_flat, bins=100, density=True)
+            hist_affine = hist_affine[hist_affine > 0]  # Remove zero bins for entropy calculation
+            entropy_affine = -np.sum(hist_affine * np.log2(hist_affine))
             
-            # Create cluster visualization plots using t-SNE and PCA
-            print("Creating cluster visualizations...")
+            # Save affine corrected logits histogram data as CSV
+            hist_affine, bins_affine = np.histogram(affine_corrected_logits_flat, bins=100)
+            hist_df_affine = pd.DataFrame({
+                'bin_center': (bins_affine[:-1] + bins_affine[1:]) / 2,
+                'frequency': hist_affine,
+                'bin_start': bins_affine[:-1],
+                'bin_end': bins_affine[1:],
+                'entropy': entropy_affine
+            })
+            csv_affine_hist_filename = os.path.join(results_dir, f"affine_corrected_histogram_data.csv")
+            hist_df_affine.to_csv(csv_affine_hist_filename, index=False)
+            print(f"Affine corrected histogram data saved as: {csv_affine_hist_filename}")
+            print(f"Affine corrected logits entropy: {entropy_affine:.4f}")
             
-            # Prepare data for visualization (use a subset if too large)
-            max_samples = 10000  # Limit samples for t-SNE performance
-            if len(q_logits) > max_samples:
-                sample_indices = np.random.choice(len(q_logits), max_samples, replace=False)
-                q_logits_viz = q_logits[sample_indices].numpy()
-                fp_logits_viz = fp_logits[sample_indices].numpy()
-                corrected_logits_viz = corrected_logits[sample_indices].numpy()
-                cluster_ids_viz = cluster_ids[sample_indices]
-            else:
-                q_logits_viz = q_logits.numpy()
-                fp_logits_viz = fp_logits.numpy()
-                corrected_logits_viz = corrected_logits.numpy()
-                cluster_ids_viz = cluster_ids
-            
-            # 1. t-SNE visualization of clusters
+            # Save cluster visualization data as CSV (without plotting)
+            # 1. t-SNE data
             try:
-                print("Computing t-SNE for cluster visualization...")
+                print("Computing t-SNE for cluster visualization data...")
+                from sklearn.manifold import TSNE
                 tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, len(q_logits_viz)//4))
                 q_logits_tsne = tsne.fit_transform(q_logits_viz)
-                
-                # Create t-SNE plot
-                plt.figure(figsize=(12, 8))
-                scatter = plt.scatter(q_logits_tsne[:, 0], q_logits_tsne[:, 1], 
-                                    c=cluster_ids_viz, cmap='tab20', alpha=0.7, s=20)
-                plt.colorbar(scatter, label='Cluster ID')
-                plt.title(f'Cluster Visualization using t-SNE (α={alpha:.2f}){pca_info}', fontsize=16)
-                plt.xlabel('t-SNE Component 1')
-                plt.ylabel('t-SNE Component 2')
-                plt.grid(True, alpha=0.3)
-                
-                # Save t-SNE plot
-                tsne_filename = os.path.join(results_dir, f"cluster_visualization_tsne.png")
-                plt.savefig(tsne_filename, dpi=300, bbox_inches='tight')
-                print(f"t-SNE cluster visualization saved as: {tsne_filename}")
                 
                 # Save t-SNE data as CSV
                 tsne_df = pd.DataFrame({
@@ -1046,31 +991,15 @@ Use these files to analyze:
                 tsne_df.to_csv(tsne_csv_filename, index=False)
                 print(f"t-SNE visualization data saved as: {tsne_csv_filename}")
                 
-                plt.show()
-                
             except Exception as e:
-                print(f"Error in t-SNE visualization: {e}")
+                print(f"Error in t-SNE computation: {e}")
             
-            # 2. PCA visualization of clusters (2D)
+            # 2. PCA data (2D)
             try:
-                print("Computing PCA for cluster visualization...")
+                print("Computing PCA for cluster visualization data...")
+                from sklearn.decomposition import PCA
                 pca_viz = PCA(n_components=2, random_state=42)
                 q_logits_pca = pca_viz.fit_transform(q_logits_viz)
-                
-                # Create PCA plot
-                plt.figure(figsize=(12, 8))
-                scatter = plt.scatter(q_logits_pca[:, 0], q_logits_pca[:, 1], 
-                                    c=cluster_ids_viz, cmap='tab20', alpha=0.7, s=20)
-                plt.colorbar(scatter, label='Cluster ID')
-                plt.title(f'Cluster Visualization using PCA (α={alpha:.2f}){pca_info}', fontsize=16)
-                plt.xlabel(f'PCA Component 1 (Explained Variance: {pca_viz.explained_variance_ratio_[0]:.3f})')
-                plt.ylabel(f'PCA Component 2 (Explained Variance: {pca_viz.explained_variance_ratio_[1]:.3f})')
-                plt.grid(True, alpha=0.3)
-                
-                # Save PCA plot
-                pca_viz_filename = os.path.join(results_dir, f"cluster_visualization_pca.png")
-                plt.savefig(pca_viz_filename, dpi=300, bbox_inches='tight')
-                print(f"PCA cluster visualization saved as: {pca_viz_filename}")
                 
                 # Save PCA data as CSV
                 pca_viz_df = pd.DataFrame({
@@ -1085,35 +1014,15 @@ Use these files to analyze:
                 pca_viz_df.to_csv(pca_viz_csv_filename, index=False)
                 print(f"PCA visualization data saved as: {pca_viz_csv_filename}")
                 
-                plt.show()
-                
             except Exception as e:
-                print(f"Error in PCA visualization: {e}")
+                print(f"Error in PCA computation: {e}")
             
-            # 3. 3D PCA visualization if enough components
+            # 3. PCA data (3D)
             try:
                 if q_logits_viz.shape[1] >= 3:
-                    print("Computing 3D PCA for cluster visualization...")
+                    print("Computing 3D PCA for cluster visualization data...")
                     pca_3d = PCA(n_components=3, random_state=42)
                     q_logits_pca_3d = pca_3d.fit_transform(q_logits_viz)
-                    
-                    # Create 3D PCA plot
-                    fig = plt.figure(figsize=(12, 8))
-                    ax = fig.add_subplot(111, projection='3d')
-                    scatter = ax.scatter(q_logits_pca_3d[:, 0], q_logits_pca_3d[:, 1], q_logits_pca_3d[:, 2], 
-                                       c=cluster_ids_viz, cmap='tab20', alpha=0.7, s=20)
-                    ax.set_xlabel(f'PCA Component 1 ({pca_3d.explained_variance_ratio_[0]:.3f})')
-                    ax.set_ylabel(f'PCA Component 2 ({pca_3d.explained_variance_ratio_[1]:.3f})')
-                    ax.set_zlabel(f'PCA Component 3 ({pca_3d.explained_variance_ratio_[2]:.3f})')
-                    ax.set_title(f'3D Cluster Visualization using PCA (α={alpha:.2f}){pca_info}', fontsize=16)
-                    
-                    # Add colorbar
-                    cbar = plt.colorbar(scatter, ax=ax, label='Cluster ID')
-                    
-                    # Save 3D PCA plot
-                    pca_3d_filename = os.path.join(results_dir, f"cluster_visualization_pca_3d.png")
-                    plt.savefig(pca_3d_filename, dpi=300, bbox_inches='tight')
-                    print(f"3D PCA cluster visualization saved as: {pca_3d_filename}")
                     
                     # Save 3D PCA data as CSV
                     pca_3d_df = pd.DataFrame({
@@ -1130,15 +1039,14 @@ Use these files to analyze:
                     pca_3d_df.to_csv(pca_3d_csv_filename, index=False)
                     print(f"3D PCA visualization data saved as: {pca_3d_csv_filename}")
                     
-                    plt.show()
                 else:
                     print("Skipping 3D PCA visualization - not enough dimensions")
                     
             except Exception as e:
-                print(f"Error in 3D PCA visualization: {e}")
+                print(f"Error in 3D PCA computation: {e}")
             
         except Exception as e:
-            print(f"Error in plotting: {e}")
+            print(f"Error in data processing: {e}")
             import traceback
             traceback.print_exc()
     
@@ -1154,6 +1062,11 @@ Use these files to analyze:
     all_q_list = [all_q]
     all_fp_list = [all_fp]
     all_corrected_list = [all_q]  # Use quantized as placeholder for corrected
+    
+    # Save initial logits statistics as tensors for training data
+    #print(f"\nSaving initial logits statistics as tensors for training data...")
+    #save_logits_statistics_as_tensor(all_q_list, initial_results_dir, 'quantized', args.arch, args.n_bits_w, args.n_bits_a, args.seed)
+    #save_logits_statistics_as_tensor(all_fp_list, initial_results_dir, 'fullprecision', args.arch, args.n_bits_w, args.n_bits_a, args.seed)
     
     '''save_logits_to_csv(all_q_list, all_fp_list, all_corrected_list, 
                       initial_results_dir, args.arch, args.n_bits_w, args.n_bits_a, args.seed)'''
