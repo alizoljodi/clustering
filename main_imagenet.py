@@ -606,10 +606,10 @@ if __name__ == '__main__':
         print(f"[Alpha={alpha:.2f}] Top-5 Accuracy: {total_top5 / total:.2f}%")
         
         # Plot randomly selected values from each cluster
-        plot_cluster_comparisons(all_q_logits, all_fp_logits, all_corrected_logits, 
+        '''plot_cluster_comparisons(all_q_logits, all_fp_logits, all_corrected_logits, 
                                all_cluster_ids, alpha, pca_dim=pca.n_components_ if pca else None, 
                                num_clusters=cluster_model.n_clusters, 
-                               arch=args.arch, n_bit_w=args.n_bits_w, n_bit_a=args.n_bits_a)
+                               arch=args.arch, n_bit_w=args.n_bits_w, n_bit_a=args.n_bits_a)'''
         
         # Save logits data as CSV files
         results_dir = f"results_alpha{alpha:.2f}_clusters{cluster_model.n_clusters}_pca{pca.n_components_ if pca else 'none'}_{args.arch}_w{args.n_bits_w}bit_a{args.n_bits_a}bit"
@@ -1134,10 +1134,10 @@ Use these files to analyze:
     all_fp_list = [all_fp]
     all_corrected_list = [all_q]  # Use quantized as placeholder for corrected
     
-    save_logits_to_csv(all_q_list, all_fp_list, all_corrected_list, 
-                      initial_results_dir, args.arch, args.n_bits_w, args.n_bits_a, args.seed)
+    '''save_logits_to_csv(all_q_list, all_fp_list, all_corrected_list, 
+                      initial_results_dir, args.arch, args.n_bits_w, args.n_bits_a, args.seed)'''
     
-    print(f"Initial logits saved in: {initial_results_dir}")
+    #print(f"Initial logits saved in: {initial_results_dir}")
     
     # Determine parameter lists for testing
     alpha_list = args.alpha_list if args.alpha_list else [args.alpha]
