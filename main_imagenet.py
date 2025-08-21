@@ -144,7 +144,7 @@ def get_train_samples(train_loader, num_samples):
     return torch.cat(train_data, dim=0)[:num_samples], torch.cat(target, dim=0)[:num_samples]
 
 
-def save_logits_to_csv(all_q_logits, all_fp_logits, all_corrected_logits, results_dir, arch, n_bit_w, n_bit_a, seed, chunk_size=1000):
+def save_logits_to_csv(all_q_logits, all_fp_logits, all_corrected_logits, all_affine_corrected_logits, results_dir, arch, n_bit_w, n_bit_a, seed, chunk_size=1000):
     """
     Save all logits data as CSV files for analysis.
     Automatically uses chunking for large datasets.
@@ -154,6 +154,7 @@ def save_logits_to_csv(all_q_logits, all_fp_logits, all_corrected_logits, result
         q_logits = torch.cat(all_q_logits, dim=0)
         fp_logits = torch.cat(all_fp_logits, dim=0)
         corrected_logits = torch.cat(all_corrected_logits, dim=0)
+        affine_corrected_logits = torch.cat(all_affine_corrected_logits, dim=0)
         
         total_samples = len(q_logits)
         print(f"Saving logits data for {total_samples} samples...")
@@ -161,7 +162,7 @@ def save_logits_to_csv(all_q_logits, all_fp_logits, all_corrected_logits, result
         # Use chunking for large datasets
         if total_samples > chunk_size:
             print(f"Large dataset detected ({total_samples} samples), using chunking...")
-            return save_logits_in_chunks(all_q_logits, all_fp_logits, all_corrected_logits, 
+            return save_logits_in_chunks(all_q_logits, all_fp_logits, all_corrected_logits, all_affine_corrected_logits,
                                       results_dir, arch, n_bit_w, n_bit_a, seed, chunk_size)
         
         # Create a base filename with model parameters
@@ -184,6 +185,12 @@ def save_logits_to_csv(all_q_logits, all_fp_logits, all_corrected_logits, result
         corrected_csv_filename = os.path.join(results_dir, f"{base_filename}_corrected.csv")
         corrected_df.to_csv(corrected_csv_filename, index=False)
         print(f"Corrected logits saved as: {corrected_csv_filename}")
+
+        # Save affine corrected logits
+        affine_corrected_df = pd.DataFrame(affine_corrected_logits.numpy())
+        affine_corrected_csv_filename = os.path.join(results_dir, f"{base_filename}_affine_corrected.csv")
+        affine_corrected_df.to_csv(affine_corrected_csv_filename, index=False)
+        print(f"Affine corrected logits saved as: {affine_corrected_csv_filename}")
         
         # Save metadata about the logits
         metadata = {
@@ -210,7 +217,7 @@ def save_logits_to_csv(all_q_logits, all_fp_logits, all_corrected_logits, result
         return False
 
 
-def save_logits_in_chunks(all_q_logits, all_fp_logits, all_corrected_logits, results_dir, arch, n_bit_w, n_bit_a, seed, chunk_size=1000):
+def save_logits_in_chunks(all_q_logits, all_fp_logits, all_corrected_logits, all_affine_corrected_logits, results_dir, arch, n_bit_w, n_bit_a, seed, chunk_size=1000):
     """
     Save logits data in chunks to handle large datasets efficiently.
     """
@@ -219,6 +226,7 @@ def save_logits_in_chunks(all_q_logits, all_fp_logits, all_corrected_logits, res
         q_logits = torch.cat(all_q_logits, dim=0)
         fp_logits = torch.cat(all_fp_logits, dim=0)
         corrected_logits = torch.cat(all_corrected_logits, dim=0)
+        affine_corrected_logits = torch.cat(all_affine_corrected_logits, dim=0)
         
         total_samples = len(q_logits)
         num_chunks = (total_samples + chunk_size - 1) // chunk_size
@@ -252,6 +260,12 @@ def save_logits_in_chunks(all_q_logits, all_fp_logits, all_corrected_logits, res
             corrected_df = pd.DataFrame(corrected_chunk.numpy())
             corrected_csv_filename = os.path.join(results_dir, f"{base_filename}_corrected{chunk_suffix}.csv")
             corrected_df.to_csv(corrected_csv_filename, index=False)
+
+            # Save affine corrected logits chunk
+            affine_corrected_chunk = affine_corrected_logits[start_idx:end_idx]
+            affine_corrected_df = pd.DataFrame(affine_corrected_chunk.numpy())
+            affine_corrected_csv_filename = os.path.join(results_dir, f"{base_filename}_affine_corrected{chunk_suffix}.csv")
+            affine_corrected_df.to_csv(affine_corrected_csv_filename, index=False)
             
             print(f"  Chunk {chunk_idx+1}/{num_chunks}: {start_idx}-{end_idx} samples saved")
         
@@ -315,6 +329,7 @@ def create_logits_summary_csv(arch, n_bit_w, n_bit_a, seed, results_summary):
                 'quantized_logits_file': f"{base_filename}_quantized.csv",
                 'fullprecision_logits_file': f"{base_filename}_fullprecision.csv",
                 'corrected_logits_file': f"{base_filename}_corrected.csv",
+                'affine_corrected_logits_file': f"{base_filename}_affine_corrected.csv",
                 'metadata_file': f"{base_filename}_metadata.csv"
             })
         
@@ -330,6 +345,7 @@ def create_logits_summary_csv(arch, n_bit_w, n_bit_a, seed, results_summary):
             'quantized_logits_file': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_quantized.csv",
             'fullprecision_logits_file': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_fullprecision.csv",
             'corrected_logits_file': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_corrected.csv",
+            'affine_corrected_logits_file': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_affine_corrected.csv",
             'metadata_file': f"logits_{arch}_w{n_bit_w}bit_a{n_bit_a}bit_seed{seed}_metadata.csv"
         })
         
@@ -557,14 +573,17 @@ if __name__ == '__main__':
         cluster_ids = cluster_model.predict(q_np)
 
         corrected = []
+        affine_corrected_list = []
         for i, q in enumerate(q_logits):
             cid = int(cluster_ids[i])
             gamma = gamma_dict[cid].to(q.device)
             beta = beta_dict[cid].to(q.device)
             affine_corrected = q * gamma + beta
+            affine_corrected_list.append(affine_corrected)
             blended = q + alpha * (affine_corrected - q)
             corrected.append(blended)
-        return torch.stack(corrected)
+        
+        return torch.stack(corrected), torch.stack(affine_corrected_list)
     
     def evaluate_cluster_affine_with_alpha(q_model, fp_model, cluster_model, gamma_dict, beta_dict, dataloader, device, pca=None, alpha=0.4):
         q_model.eval()
@@ -575,6 +594,7 @@ if __name__ == '__main__':
         all_q_logits = []
         all_fp_logits = []
         all_corrected_logits = []
+        all_affine_corrected_logits = []
         all_cluster_ids = []
 
         with torch.no_grad():
@@ -583,12 +603,13 @@ if __name__ == '__main__':
                 q_logits = q_model(images)
                 fp_logits = fp_model(images)
 
-                corrected_logits = apply_cluster_affine(q_logits, cluster_model, gamma_dict, beta_dict, pca=pca, alpha=alpha)
+                corrected_logits, affine_corrected_logits = apply_cluster_affine(q_logits, cluster_model, gamma_dict, beta_dict, pca=pca, alpha=alpha)
 
                 # Store logits for plotting
                 all_q_logits.append(q_logits.cpu())
                 all_fp_logits.append(fp_logits.cpu())
                 all_corrected_logits.append(corrected_logits.cpu())
+                all_affine_corrected_logits.append(affine_corrected_logits.cpu())
                 
                 # Get cluster IDs for this batch
                 q_np = q_logits.cpu().numpy()
@@ -615,7 +636,7 @@ if __name__ == '__main__':
         results_dir = f"results_alpha{alpha:.2f}_clusters{cluster_model.n_clusters}_pca{pca.n_components_ if pca else 'none'}_{args.arch}_w{args.n_bits_w}bit_a{args.n_bits_a}bit"
         os.makedirs(results_dir, exist_ok=True)
         
-        save_logits_to_csv(all_q_logits, all_fp_logits, all_corrected_logits, 
+        save_logits_to_csv(all_q_logits, all_fp_logits, all_corrected_logits, all_affine_corrected_logits,
                           results_dir, args.arch, args.n_bits_w, args.n_bits_a, args.seed)
         
         return total_top1 / total, total_top5 / total
