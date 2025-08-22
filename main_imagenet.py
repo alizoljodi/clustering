@@ -459,7 +459,7 @@ if __name__ == '__main__':
     parser.add_argument('--disable_8bit_head_stem', action='store_true')
 
     # weight calibration parameters
-    parser.add_argument('--num_samples', default=1024, type=int, help='size of the calibration dataset')
+    parser.add_argument('--num_samples', default=1024, type=int, help='size of the calibration dataset and training samples for logits extraction')
     parser.add_argument('--iters_w', default=20000, type=int, help='number of iteration for adaround')
     parser.add_argument('--weight', default=0.01, type=float, help='weight of rounding cost vs the reconstruction loss.')
     parser.add_argument('--keep_cpu', action='store_true', help='keep the calibration data on cpu')
@@ -565,28 +565,46 @@ if __name__ == '__main__':
     print('Full quantization (W{}A{}) accuracy: {}'.format(args.n_bits_w, args.n_bits_a,
                                                            validate_model(test_loader, qnn)))
 
-    def extract_model_logits(q_model, fp_model, dataloader, device):
+    def extract_model_logits(q_model, fp_model, dataloader, device, num_samples=None):
         """
         Extract logits from both quantized and full-precision models.
         Returns concatenated logits tensors.
+        
+        Args:
+            q_model: Quantized model
+            fp_model: Full-precision model
+            dataloader: Data loader for training data
+            device: Device to run models on
+            num_samples: Maximum number of samples to process (None for all samples)
         """
         q_model.eval()
         fp_model.eval()
 
-        all_q, all_fp = [], []
+        all_q, all_fp = []
+        samples_processed = 0
 
         with torch.no_grad():
             for i, (images, _) in enumerate(dataloader):
-                #if i>=10:
-                #    break
+                # Check if we've reached the desired number of samples
+                if num_samples is not None and samples_processed >= num_samples:
+                    break
+                
                 images = images.to(device)
                 q_logits = q_model(images)
                 fp_logits = fp_model(images)
                 all_q.append(q_logits.cpu())
                 all_fp.append(fp_logits.cpu())
+                
+                samples_processed += images.size(0)
+                
+                # Print progress every 100 batches
+                if (i + 1) % 100 == 0:
+                    print(f"Processed {samples_processed} samples...")
 
         all_q = torch.cat(all_q, dim=0)  # [N, C]
         all_fp = torch.cat(all_fp, dim=0)  # [N, C]
+        
+        print(f"Extracted logits from {all_q.shape[0]} samples")
         
         return all_q, all_fp
 
@@ -1140,8 +1158,8 @@ Use these CSV files to analyze:
             traceback.print_exc()
     
     # Extract logits from both models
-    print("Extracting logits from quantized and full-precision models...")
-    all_q, all_fp = extract_model_logits(qnn, fp_model, train_loader, device)
+    print(f"Extracting logits from quantized and full-precision models using {args.num_samples} training samples...")
+    all_q, all_fp = extract_model_logits(qnn, fp_model, train_loader, device, num_samples=args.num_samples)
     
     # Save initial extracted logits for all models
     initial_results_dir = f"initial_logits_{args.arch}_w{args.n_bits_w}bit_a{args.n_bits_a}bit_seed{args.seed}"
