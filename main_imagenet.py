@@ -580,7 +580,7 @@ if __name__ == '__main__':
         q_model.eval()
         fp_model.eval()
 
-        all_q, all_fp = []
+        all_q, all_fp = [],[]
         samples_processed = 0
 
         with torch.no_grad():
