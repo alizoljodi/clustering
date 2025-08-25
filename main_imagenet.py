@@ -12,6 +12,7 @@ import time
 import hubconf  # noqa: F401
 import copy
 import pandas as pd
+import gc
 from quant import (
     block_reconstruction,
     layer_reconstruction,
@@ -1251,4 +1252,25 @@ Use these CSV files to analyze:
         print(f"Logits summary created successfully: {summary_csv}")
     else:
         print("Failed to create logits summary")
+    
+    # Clean up CUDA memory and run garbage collection
+    if torch.cuda.is_available():
+        # Log memory status before cleanup
+        allocated_before = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
+        cached_before = torch.cuda.memory_reserved() / 1024**3      # Convert to GB
+        print(f"CUDA Memory before cleanup - Allocated: {allocated_before:.3f} GB, Cached: {cached_before:.3f} GB")
+        
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        
+        # Log memory status after cleanup
+        allocated_after = torch.cuda.memory_allocated() / 1024**3   # Convert to GB
+        cached_after = torch.cuda.memory_reserved() / 1024**3       # Convert to GB
+        print(f"CUDA Memory after cleanup  - Allocated: {allocated_after:.3f} GB, Cached: {cached_after:.3f} GB")
+        print(f"Memory freed: {cached_before - cached_after:.3f} GB")
+    else:
+        print("CUDA not available - skipping memory cleanup")
+    
+    gc.collect()
+    print("Garbage collection completed")
 
