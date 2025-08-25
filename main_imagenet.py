@@ -488,6 +488,7 @@ if __name__ == '__main__':
     parser.add_argument('--alpha', default=0.4, type=float, help='alpha blending parameter for cluster affine correction')
     parser.add_argument('--num_clusters', default=64, type=int, help='number of clusters for cluster affine correction')
     parser.add_argument('--pca_dim', default=50, type=int, help='PCA dimension for clustering (None to disable)')
+    parser.add_argument('--use_global_tensors', action='store_true', help='if True, use global alpha/beta tensors instead of clustering')
     
     # Multiple parameter testing
     parser.add_argument('--alpha_list', nargs='+', type=float, help='list of alpha values to test')
@@ -614,7 +615,7 @@ if __name__ == '__main__':
         Build cluster affine correction model from pre-extracted logits.
         """
         # Optional PCA for clustering only
-        pca = None
+        #pca = None
         if pca_dim is not None and pca_dim < all_q.shape[1]:
             pca = PCA(n_components=pca_dim, random_state=42)
             q_features = pca.fit_transform(all_q.numpy())
@@ -656,6 +657,28 @@ if __name__ == '__main__':
 
         return cluster_model, gamma_dict, beta_dict, pca
 
+    def build_global_affine(all_q, all_fp):
+        """
+        Build global affine correction model from pre-extracted logits without clustering.
+        Computes single alpha and beta tensors for the entire dataset.
+        """
+        # For global affine: learn single gamma, beta (per-class) for entire dataset
+        # Closed-form least squares: fp ≈ gamma * q + beta
+        
+        # Compute mean across all samples
+        mean_q = all_q.mean(dim=0)  # [C]
+        mean_fp = all_fp.mean(dim=0)  # [C]
+        
+        # Compute variance, avoid div by zero
+        var_q = all_q.var(dim=0, unbiased=False)  # [C]
+        var_q[var_q < 1e-8] = 1e-8
+        
+        # Compute gamma and beta for each class
+        gamma = ((all_q - mean_q) * (all_fp - mean_fp)).mean(dim=0) / var_q  # [C]
+        beta = mean_fp - gamma * mean_q  # [C]
+        
+        return gamma, beta
+
     def apply_cluster_affine(q_logits, cluster_model, gamma_dict, beta_dict, pca=None, alpha=0.4):
         """
         Apply per-cluster affine correction with optional PCA and alpha blending.
@@ -680,6 +703,18 @@ if __name__ == '__main__':
             corrected.append(blended)
         
         return torch.stack(corrected), torch.stack(affine_corrected_list)
+    
+    def apply_global_affine(q_logits, gamma, beta, alpha=0.4):
+        """
+        Apply global affine correction with alpha blending.
+        """
+        # Apply global gamma and beta to all logits
+        affine_corrected = q_logits * gamma.to(q_logits.device) + beta.to(q_logits.device)
+        
+        # Apply alpha blending
+        corrected = q_logits + alpha * (affine_corrected - q_logits)
+        
+        return corrected, affine_corrected
     
     def evaluate_cluster_affine_with_alpha(q_model, fp_model, cluster_model, gamma_dict, beta_dict, dataloader, device, pca=None, alpha=0.4):
         q_model.eval()
@@ -832,6 +867,44 @@ if __name__ == '__main__':
         print(f"Affine corrected logits entropy: {entropy_affine:.4f}")
         
         return total_top1 / total, total_top5 / total
+    
+    def evaluate_global_affine_with_alpha(q_model, fp_model, gamma, beta, dataloader, device, alpha=0.4):
+        q_model.eval()
+        fp_model.eval()
+        total_top1, total_top5, total = 0, 0, 0
+        
+        # Store logits for plotting
+        all_q_logits = []
+        all_fp_logits = []
+        all_corrected_logits = []
+        all_affine_corrected_logits = []
+
+        with torch.no_grad():
+            for images, targets in dataloader:
+                images, targets = images.to(device), targets.to(device)
+                q_logits = q_model(images)
+                fp_logits = fp_model(images)
+                
+                # Apply global affine correction
+                corrected_logits, affine_corrected_logits = apply_global_affine(q_logits, gamma, beta, alpha)
+                
+                # Store logits for analysis
+                all_q_logits.append(q_logits.cpu())
+                all_fp_logits.append(fp_logits.cpu())
+                all_corrected_logits.append(corrected_logits.cpu())
+                all_affine_corrected_logits.append(affine_corrected_logits.cpu())
+                
+                # Compute accuracy
+                acc1, acc5 = accuracy(corrected_logits, targets, topk=(1, 5))
+                total_top1 += acc1[0].item() * images.size(0)
+                total_top5 += acc5[0].item() * images.size(0)
+                total += images.size(0)
+        
+        # Convert to percentages
+        top1_acc = total_top1 / total
+        top5_acc = total_top5 / total
+        
+        return top1_acc, top5_acc
     
     def plot_cluster_comparisons(all_q_logits, all_fp_logits, all_corrected_logits, all_affine_corrected_logits, all_cluster_ids, alpha, pca_dim=None, num_clusters=None, arch=None, n_bit_w=None, n_bit_a=None):
         """
@@ -1183,47 +1256,88 @@ Use these CSV files to analyze:
     
     # Determine parameter lists for testing
     alpha_list = args.alpha_list if args.alpha_list else [args.alpha]
-    num_clusters_list = args.num_clusters_list if args.num_clusters_list else [args.num_clusters]
-    pca_dim_list = args.pca_dim_list if args.pca_dim_list else [args.pca_dim]
     
-    print(f"Testing combinations:")
-    print(f"  Alpha values: {alpha_list}")
-    print(f"  Cluster numbers: {num_clusters_list}")
-    print(f"  PCA dimensions: {pca_dim_list}")
-    
-    # Store results
-    results = []
-    
-    # Loop through all parameter combinations
-    for alpha in alpha_list:
-        for num_clusters in num_clusters_list:
-            for pca_dim in pca_dim_list:
-                print(f"\n{'='*60}")
-                print(f"Testing: alpha={alpha}, clusters={num_clusters}, pca_dim={pca_dim}")
-                print(f"{'='*60}")
-                
-                # Build cluster affine model
-                cluster_model, gamma_dict, beta_dict, pca = build_cluster_affine(
-                    all_q, all_fp, num_clusters=num_clusters, pca_dim=pca_dim
-                )
-                
-                # Evaluate with current parameters
-                top1_acc, top5_acc = evaluate_cluster_affine_with_alpha(
-                    qnn, fp_model, cluster_model, gamma_dict, beta_dict, test_loader, device, 
-                    pca=pca, alpha=alpha
-                )
-                
-                # Store results
-                result = {
-                    'alpha': alpha,
-                    'num_clusters': num_clusters,
-                    'pca_dim': pca_dim,
-                    'top1_accuracy': top1_acc,
-                    'top5_accuracy': top5_acc
-                }
-                results.append(result)
-                
-                print(f"Result: Top-1: {top1_acc:.2f}%, Top-5: {top5_acc:.2f}%")
+    if args.use_global_tensors:
+        # Use global alpha and beta tensors instead of clustering
+        print(f"Using global alpha/beta tensors approach:")
+        print(f"  Alpha values: {alpha_list}")
+        
+        # Build global affine model
+        print(f"\n{'='*60}")
+        print(f"Building global affine model...")
+        print(f"{'='*60}")
+        
+        gamma, beta = build_global_affine(all_q, all_fp)
+        
+        # Store results
+        results = []
+        
+        # Loop through alpha values only
+        for alpha in alpha_list:
+            print(f"\n{'='*60}")
+            print(f"Testing: alpha={alpha}")
+            print(f"{'='*60}")
+            
+            # Evaluate with current alpha
+            top1_acc, top5_acc = evaluate_global_affine_with_alpha(
+                qnn, fp_model, gamma, beta, test_loader, device, alpha=alpha
+            )
+            
+            # Store results
+            result = {
+                'alpha': alpha,
+                'num_clusters': 'global',
+                'pca_dim': 'global',
+                'top1_accuracy': top1_acc,
+                'top5_accuracy': top5_acc
+            }
+            results.append(result)
+            
+            print(f"Result: Top-1: {top1_acc:.2f}%, Top-5: {top5_acc:.2f}%")
+            
+    else:
+        # Use clustering approach (original behavior)
+        num_clusters_list = args.num_clusters_list if args.num_clusters_list else [args.num_clusters]
+        pca_dim_list = args.pca_dim_list if args.pca_dim_list else [args.pca_dim]
+        
+        print(f"Testing clustering combinations:")
+        print(f"  Alpha values: {alpha_list}")
+        print(f"  Cluster numbers: {num_clusters_list}")
+        print(f"  PCA dimensions: {pca_dim_list}")
+        
+        # Store results
+        results = []
+        
+        # Loop through all parameter combinations
+        for alpha in alpha_list:
+            for num_clusters in num_clusters_list:
+                for pca_dim in pca_dim_list:
+                    print(f"\n{'='*60}")
+                    print(f"Testing: alpha={alpha}, clusters={num_clusters}, pca_dim={pca_dim}")
+                    print(f"{'='*60}")
+                    
+                    # Build cluster affine model
+                    cluster_model, gamma_dict, beta_dict, pca = build_cluster_affine(
+                        all_q, all_fp, num_clusters=num_clusters, pca_dim=pca_dim
+                    )
+                    
+                    # Evaluate with current parameters
+                    top1_acc, top5_acc = evaluate_cluster_affine_with_alpha(
+                        qnn, fp_model, cluster_model, gamma_dict, beta_dict, test_loader, device, 
+                        pca=pca, alpha=alpha
+                    )
+                    
+                    # Store results
+                    result = {
+                        'alpha': alpha,
+                        'num_clusters': num_clusters,
+                        'pca_dim': pca_dim,
+                        'top1_accuracy': top1_acc,
+                        'top5_accuracy': top5_acc
+                    }
+                    results.append(result)
+                    
+                    print(f"Result: Top-1: {top1_acc:.2f}%, Top-5: {top5_acc:.2f}%")
     
     # Print summary of all results
     print(f"\n{'='*80}")
