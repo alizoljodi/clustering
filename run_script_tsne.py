@@ -21,31 +21,31 @@ if __name__ == "__main__":
     if args.exp_name == "resnet50":
         for seed in seeds:
             for i in range(4):
-                os.system(f"python main_imagenet_tsne.py --data_path /datasets/imagenet --arch resnet50 --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.02")
+                os.system(f"python main_imagenet_tsne.py --data_path /home/alz07xz/imagenet --arch resnet50 --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.02")
                 time.sleep(0.5)
 
     if args.exp_name == "regnetx_600m":
         for seed in seeds:
             for i in range(4):
-                os.system(f"python main_imagenet_tsne.py --data_path /datasets/imagenet --arch regnetx_600m --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.01")
+                os.system(f"python main_imagenet_tsne.py --data_path /home/alz07xz/imagenet --arch regnetx_600m --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.01")
                 time.sleep(0.5)
     
     if args.exp_name == "regnetx_3200m":
         for seed in seeds:
             for i in range(4):
-                os.system(f"python main_imagenet_tsne.py --data_path /datasets/imagenet --arch regnetx_3200m --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.01")
+                os.system(f"python main_imagenet_tsne.py --data_path /home/alz07xz/imagenet --arch regnetx_3200m --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.01")
                 time.sleep(0.5)
     
     if args.exp_name == "mobilenetv2":
         for seed in seeds:
             for i in range(4):
-                os.system(f"python main_imagenet_tsne.py --data_path /datasets/imagenet --arch mobilenetv2 --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.1 --T 1.0 --lamb_c 0.005")
+                os.system(f"python main_imagenet_tsne.py --data_path /home/alz07xz/imagenet --arch mobilenetv2 --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.1 --T 1.0 --lamb_c 0.005")
                 time.sleep(0.5)
     
     if args.exp_name == "mnasnet":
         for seed in seeds:
             for i in range(4):
-                os.system(f"python main_imagenet_tsne.py --data_path /datasets/imagenet --arch mnasnet --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.2 --T 1.0 --lamb_c 0.001")
+                os.system(f"python main_imagenet_tsne.py --data_path /home/alz07xz/imagenet --arch mnasnet --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.2 --T 1.0 --lamb_c 0.001")
                 time.sleep(0.5)
 
     
