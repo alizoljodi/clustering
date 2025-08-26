@@ -11,4 +11,4 @@
 
 
 source /home/alz07xz/project/PD-Quant/pd_quant/bin/activate
-python run_script_tsne.py  regnetx_600m
+python run_script_tsne.py mobilenetv2
