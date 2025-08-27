@@ -38,7 +38,7 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV="/mimer/NOBACKUP/groups/naiss2025-22-91/ali/lookup/PD-Quant/myvenv"
+VIRTUAL_ENV="/mimer/NOBACKUP/groups/naiss2025-22-91/ali/clustering/myvenv"
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"

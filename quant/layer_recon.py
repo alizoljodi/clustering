@@ -347,7 +347,7 @@ class LossFunction:
                                lambda_repel=0.1,
                                margin=1.0,
                                center_lr=0.5,
-                               normalize=False)
+                               normalize=False).to("cuda")
         else:
             self.center_loss = None
 

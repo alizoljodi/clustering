@@ -546,12 +546,12 @@ if __name__ == '__main__':
             # Pass clustering parameters to layer_reconstruction for CenterMarginLoss initialization
             # These parameters will be used to set up the clustering-aware loss function
             layer_reconstruction(qnn, fp_model, module, fp_module, 
-                               num_clusters=args.num_clusters, pca_dim=args.pca_dim, **kwargs)
+                               num_clusters=args.num_clusters, pca_dim=1000, **kwargs)
         elif isinstance(module, BaseQuantBlock):
             # Pass clustering parameters to block_reconstruction for CenterMarginLoss initialization
             # These parameters will be used to set up the clustering-aware loss function
             block_reconstruction(qnn, fp_model, module, fp_module, 
-                               num_clusters=args.num_clusters, pca_dim=args.pca_dim, **kwargs)
+                               num_clusters=args.num_clusters, pca_dim=1000, **kwargs)
         else:
             raise NotImplementedError
     def recon_model(model: nn.Module, fp_model: nn.Module):

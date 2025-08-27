@@ -33,7 +33,7 @@ end
 # Unset irrelevant variables.
 deactivate nondestructive
 
-set -gx VIRTUAL_ENV "/mimer/NOBACKUP/groups/naiss2025-22-91/ali/lookup/PD-Quant/myvenv"
+set -gx VIRTUAL_ENV "/mimer/NOBACKUP/groups/naiss2025-22-91/ali/clustering/myvenv"
 
 set -gx _OLD_VIRTUAL_PATH $PATH
 set -gx PATH "$VIRTUAL_ENV/bin" $PATH
