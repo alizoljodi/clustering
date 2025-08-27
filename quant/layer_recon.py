@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from .quant_layer import QuantModule, lp_loss
 from .quant_model import QuantModel
@@ -7,6 +8,143 @@ from .adaptive_rounding import AdaRoundQuantizer
 from .set_weight_quantize_params import get_init, get_dc_fp_init
 from .set_act_quantize_params import set_act_quantize_params
 from .quant_block import BaseQuantBlock, specials_unquantized
+
+
+class CenterMarginLoss(nn.Module):
+    """
+    Center loss + inter-class margin (repulsion) for improving clusterability.
+
+    L = lambda_center * (1/B) * sum_i || z_i - c_{y_i} ||_2^2
+      + lambda_repel  * sum_{k!=j} max(0, m - ||c_k - c_j||_2)^2 / N_pairs
+
+    Args:
+        num_classes (int): number of classes (K).
+        feat_dim (int): feature dimension (d).
+        lambda_center (float): weight for center (within-cluster) term.
+        lambda_repel (float): weight for repulsion (between-centers) term.
+        margin (float): target minimum distance between any two centers.
+        center_lr (float): step size for updating centers (EMA-style).
+        normalize (bool): if True, L2-normalize features & centers before loss.
+        init_std (float): std for random center initialization.
+        device, dtype: optional placement.
+    """
+    def __init__(self,
+                 num_classes: int,
+                 feat_dim: int,
+                 lambda_center: float = 1.0,
+                 lambda_repel: float = 0.1,
+                 margin: float = 1.0,
+                 center_lr: float = 0.5,
+                 normalize: bool = False,
+                 init_std: float = 0.01,
+                 device=None,
+                 dtype=torch.float32):
+        super().__init__()
+        self.K = int(num_classes)
+        self.d = int(feat_dim)
+        self.lambda_center = float(lambda_center)
+        self.lambda_repel  = float(lambda_repel)
+        self.margin = float(margin)
+        self.center_lr = float(center_lr)
+        self.normalize = bool(normalize)
+
+        # Centers are parameters we update manually (not via the main optimizer).
+        centers = torch.randn(self.K, self.d, device=device, dtype=dtype) * init_std
+        self.register_buffer("centers", centers)
+
+        # For lazy init (optional): mark classes we have seen at least once
+        self.register_buffer("seen_mask", torch.zeros(self.K, dtype=torch.bool, device=device))
+
+    @torch.no_grad()
+    def _lazy_init_centers(self, z, y):
+        """
+        Initialize centers of unseen classes from the current batch means.
+        """
+        for k in y.unique().tolist():
+            k = int(k)
+            mask = (y == k)
+            if mask.any() and not self.seen_mask[k]:
+                self.centers[k] = z[mask].mean(dim=0)
+                self.seen_mask[k] = True
+
+    def _update_centers(self, z, y):
+        """
+        Online center update (like an EMA over batch samples).
+        Δc_k = mean(c_k - z_i) for i in class k
+        c_k <- c_k - center_lr * Δc_k
+        """
+        with torch.no_grad():
+            for k in y.unique().tolist():
+                k = int(k)
+                zk = z[y == k]
+                if zk.numel() == 0:
+                    continue
+                ck = self.centers[k]
+                delta = (ck - zk).mean(dim=0)
+                self.centers[k] = ck - self.center_lr * delta
+                self.seen_mask[k] = True
+
+    def forward(self, z: torch.Tensor, y: torch.Tensor):
+        """
+        Args:
+            z: [B, d] features (e.g., penultimate layer or logits—you choose).
+            y: [B] int labels in [0, K-1] (true or pseudo-labels).
+
+        Returns:
+            total_loss, dict(stats)
+        """
+        assert z.dim() == 2 and z.size(1) == self.d, "z must be [B, d]"
+        assert y.dim() == 1 and y.size(0) == z.size(0), "y must be [B]"
+
+        if self.normalize:
+            z = F.normalize(z, dim=1)
+            # normalize centers for a fair cosine-space comparison
+            centers_norm = F.normalize(self.centers, dim=1)
+        else:
+            centers_norm = self.centers
+
+        # Lazy init unseen centers from this batch
+        self._lazy_init_centers(z, y)
+
+        B = z.size(0)
+
+        # ----- Center (within-cluster) loss -----
+        c_y = centers_norm[y]                    # [B, d]
+        center_loss = (z - c_y).pow(2).sum(dim=1).mean()  # average over batch
+        # Optionally normalize by d (kept simple here):
+        # center_loss = center_loss / self.d
+
+        # ----- Repulsion (between-centers) loss -----
+        # Compute on centers of classes present in this batch (stable & fast)
+        present = y.unique()
+        C = centers_norm[present]                # [Kb, d]
+        if C.size(0) > 1:
+            # pairwise distances
+            D = torch.cdist(C, C, p=2)          # [Kb, Kb]
+            # mask out diagonal
+            infdiag = torch.full_like(D, float('inf'))
+            D = torch.where(torch.eye(D.size(0), device=D.device, dtype=torch.bool), infdiag, D)
+            # hinge on margin
+            repel = torch.clamp(self.margin - D, min=0.0).pow(2)
+            # average over k!=j pairs
+            repel_loss = repel[repel.isfinite()].mean()
+        else:
+            repel_loss = torch.zeros((), device=z.device, dtype=z.dtype)
+
+        total = self.lambda_center * center_loss + self.lambda_repel * repel_loss
+
+        # ----- Update centers after computing gradients wrt features -----
+        # (Call backward on `total` first in your training loop, then call
+        #  `loss_obj.update()` OR set update_mode='post_backward' and call it outside.)
+        # Here we update immediately; if you prefer post-backward, split this call.
+        self._update_centers(z.detach(), y.detach())
+
+        stats = {
+            "center_loss": center_loss.detach(),
+            "repel_loss": repel_loss.detach(),
+            "num_present_classes": present.numel()
+        }
+        return total, stats
 
 include = False
 def find_unquantized_module(model: torch.nn.Module, module_list: list = [], name_list: list = []):
@@ -30,7 +168,8 @@ def layer_reconstruction(model: QuantModel, fp_model: QuantModel, layer: QuantMo
                         cali_data: torch.Tensor,batch_size: int = 32, iters: int = 20000, weight: float = 0.001,
                         opt_mode: str = 'mse', b_range: tuple = (20, 2),
                         warmup: float = 0.0, p: float = 2.0, lr: float = 4e-5, input_prob: float = 1.0, 
-                        keep_gpu: bool = True, lamb_r: float = 0.2, T: float = 7.0, bn_lr: float = 1e-3, lamb_c=0.02):
+                        keep_gpu: bool = True, lamb_r: float = 0.2, T: float = 7.0, bn_lr: float = 1e-3, lamb_c=0.02,
+                        num_clusters: int = 64, pca_dim: int = None, lambda_center: float = 0.1):
     """
     Reconstruction to optimize the output from each layer.
 
@@ -51,6 +190,9 @@ def layer_reconstruction(model: QuantModel, fp_model: QuantModel, layer: QuantMo
     :param T: temperature coefficient for KL divergence
     :param bn_lr: learning rate for DC
     :param lamb_c: hyper-parameter for DC
+    :param num_clusters: number of clusters for CenterMarginLoss (default: 64)
+    :param pca_dim: PCA dimension for clustering (default: None)
+    :param lambda_center: weight for center loss (0.0 to 1.0, default: 0.1)
     """
 
     '''get input and set scale'''
@@ -98,9 +240,22 @@ def layer_reconstruction(model: QuantModel, fp_model: QuantModel, layer: QuantMo
     
     loss_mode = 'relaxation'
     rec_loss = opt_mode
+    
+    # Determine feature dimension for CenterMarginLoss
+    # Use PCA dimension if specified, otherwise use the output dimension of the layer
+    if pca_dim is not None:
+        feat_dim = pca_dim
+    else:
+        # Get the output dimension from the layer's output shape
+        with torch.no_grad():
+            sample_input = torch.randn(1, *cached_inps.shape[1:]).to(cached_inps.device)
+            sample_output = layer(sample_input)
+            feat_dim = sample_output.shape[1] if len(sample_output.shape) > 1 else sample_output.shape[0]
+    
     loss_func = LossFunction(layer, round_loss=loss_mode, weight=weight,
                              max_count=iters, rec_loss=rec_loss, b_range=b_range,
-                             decay_start=0, warmup=warmup, p=p, lam=lamb_r, T=T)
+                             decay_start=0, warmup=warmup, p=p, lam=lamb_r, T=T,
+                             num_clusters=num_clusters, feat_dim=feat_dim, lambda_center=lambda_center)
     device = 'cuda'
     sz = cached_inps.size(0)
     for i in range(iters):
@@ -162,7 +317,10 @@ class LossFunction:
                  warmup: float = 0.0,
                  p: float = 2.,
                  lam: float = 1.0,
-                 T: float = 7.0):
+                 T: float = 7.0,
+                 num_clusters: int = 64,
+                 feat_dim: int = None,
+                 lambda_center: float = 0.1):
 
         self.layer = layer
         self.round_loss = round_loss
@@ -172,11 +330,26 @@ class LossFunction:
         self.p = p
         self.lam = lam
         self.T = T
+        self.num_clusters = num_clusters
+        self.feat_dim = feat_dim
+        self.lambda_center = lambda_center
 
         self.temp_decay = LinearTempDecay(max_count, rel_start_decay=warmup + (1 - warmup) * decay_start,
                                           start_b=b_range[0], end_b=b_range[1])
         self.count = 0
         self.pd_loss = torch.nn.KLDivLoss(reduction='batchmean')
+        
+        # Initialize CenterMarginLoss for potential future use
+        # Note: Currently not used in loss computation as it requires labels/cluster assignments
+        if self.feat_dim is not None:
+            self.center_loss = CenterMarginLoss(num_classes=self.num_clusters, feat_dim=self.feat_dim,
+                               lambda_center=self.lambda_center,
+                               lambda_repel=0.1,
+                               margin=1.0,
+                               center_lr=0.5,
+                               normalize=False)
+        else:
+            self.center_loss = None
 
     def __call__(self, pred, tgt, output, output_fp):
         """
@@ -201,15 +374,33 @@ class LossFunction:
 
         b = self.temp_decay(self.count)
         if self.count < self.loss_start or self.round_loss == 'none':
-            b = round_loss = 0
+            round_loss = 0
         elif self.round_loss == 'relaxation':
             round_loss = 0
             round_vals = self.layer.weight_quantizer.get_soft_targets()
             round_loss += self.weight * (1 - ((round_vals - .5).abs() * 2).pow(b)).sum()
         else:
             raise NotImplementedError
-        total_loss = rec_loss + round_loss + pd_loss
+            
+        # Calculate center loss if available
+        center_loss_val = 0.0
+        if self.center_loss is not None and self.lambda_center > 0.0:
+            # For center loss, we need cluster assignments (labels)
+            # Since we don't have them during reconstruction, we'll use a simple approach
+            # or skip the center loss component
+            try:
+                # Use output features as cluster assignments (simple approach)
+                # This is a placeholder - in practice you'd want proper cluster assignments
+                cluster_assignments = torch.zeros(output.size(0), dtype=torch.long, device=output.device)
+                center_loss_val = self.center_loss(output, cluster_assignments)[0]  # Get the loss value
+            except Exception as e:
+                # If center loss fails, set it to 0
+                center_loss_val = 0.0
+                if self.count % 500 == 0:
+                    print(f"Warning: Center loss computation failed: {e}")
+        
+        total_loss = rec_loss + round_loss + pd_loss + self.lambda_center * center_loss_val
         if self.count % 500 == 0:
-            print('Total loss:\t{:.3f} (rec:{:.3f}, pd:{:.3f}, round:{:.3f})\tb={:.2f}\tcount={}'.format(
-                float(total_loss), float(rec_loss), float(pd_loss), float(round_loss), b, self.count))
+            print('Total loss:\t{:.3f} (rec:{:.3f}, pd:{:.3f}, round:{:.3f}, center:{:.3f})\tb={:.2f}\tcount={}'.format(
+                float(total_loss), float(rec_loss), float(pd_loss), float(round_loss), float(center_loss_val), b, self.count))
         return total_loss

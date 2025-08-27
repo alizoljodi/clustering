@@ -489,6 +489,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_clusters', default=64, type=int, help='number of clusters for cluster affine correction')
     parser.add_argument('--pca_dim', default=50, type=int, help='PCA dimension for clustering (None to disable)')
     parser.add_argument('--use_global_tensors', action='store_true', help='if True, use global alpha/beta tensors instead of clustering')
+    parser.add_argument('--lambda_center', default=0.1, type=float, help='weight for center loss (0.0 to 1.0)')
     
     # Multiple parameter testing
     parser.add_argument('--alpha_list', nargs='+', type=float, help='list of alpha values to test')
@@ -534,17 +535,23 @@ if __name__ == '__main__':
     kwargs = dict(cali_data=cali_data, iters=args.iters_w, weight=args.weight,
                 b_range=(args.b_start, args.b_end), warmup=args.warmup, opt_mode='mse',
                 lr=args.lr, input_prob=args.input_prob, keep_gpu=not args.keep_cpu, 
-                lamb_r=args.lamb_r, T=args.T, bn_lr=args.bn_lr, lamb_c=args.lamb_c)
-
+                lamb_r=args.lamb_r, T=args.T, bn_lr=args.bn_lr, lamb_c=args.lamb_c,
+                lambda_center=args.lambda_center)
 
     '''init weight quantizer'''
     set_weight_quantize_params(qnn)
 
     def set_weight_act_quantize_params(module, fp_module):
         if isinstance(module, QuantModule):
-            layer_reconstruction(qnn, fp_model, module, fp_module, **kwargs)
+            # Pass clustering parameters to layer_reconstruction for CenterMarginLoss initialization
+            # These parameters will be used to set up the clustering-aware loss function
+            layer_reconstruction(qnn, fp_model, module, fp_module, 
+                               num_clusters=args.num_clusters, pca_dim=args.pca_dim, **kwargs)
         elif isinstance(module, BaseQuantBlock):
-            block_reconstruction(qnn, fp_model, module, fp_module, **kwargs)
+            # Pass clustering parameters to block_reconstruction for CenterMarginLoss initialization
+            # These parameters will be used to set up the clustering-aware loss function
+            block_reconstruction(qnn, fp_model, module, fp_module, 
+                               num_clusters=args.num_clusters, pca_dim=args.pca_dim, **kwargs)
         else:
             raise NotImplementedError
     def recon_model(model: nn.Module, fp_model: nn.Module):
