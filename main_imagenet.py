@@ -395,6 +395,14 @@ if __name__ == '__main__':
     parser.add_argument('--num_clusters', default=64, type=int, help='number of clusters for cluster affine correction')
     parser.add_argument('--pca_dim', default=50, type=int, help='PCA dimension for clustering (None to disable)')
     
+    # Loss function ablation parameters
+    parser.add_argument('--use_rec_loss', action='store_true', default=True, help='enable reconstruction loss (default: True)')
+    parser.add_argument('--use_round_loss', action='store_true', default=True, help='enable rounding loss (default: True)')
+    parser.add_argument('--use_pd_loss', action='store_true', default=True, help='enable prediction difference loss (default: True)')
+    parser.add_argument('--no_rec_loss', action='store_true', help='disable reconstruction loss')
+    parser.add_argument('--no_round_loss', action='store_true', help='disable rounding loss')
+    parser.add_argument('--no_pd_loss', action='store_true', help='disable prediction difference loss')
+    
     # Multiple parameter testing
     parser.add_argument('--alpha_list', nargs='+', type=float, help='list of alpha values to test')
     parser.add_argument('--num_clusters_list', nargs='+', type=int, help='list of cluster numbers to test')
@@ -435,11 +443,22 @@ if __name__ == '__main__':
     cali_data, cali_target = get_train_samples(train_loader, num_samples=args.num_samples)
     device = next(qnn.parameters()).device
 
+    # Handle ablation arguments
+    use_rec_loss = args.use_rec_loss and not args.no_rec_loss
+    use_round_loss = args.use_round_loss and not args.no_round_loss
+    use_pd_loss = args.use_pd_loss and not args.no_pd_loss
+    
+    print(f"Loss function ablation configuration:")
+    print(f"  - Reconstruction Loss: {'✓' if use_rec_loss else '✗'}")
+    print(f"  - Rounding Loss: {'✓' if use_round_loss else '✗'}")
+    print(f"  - Prediction Difference Loss: {'✓' if use_pd_loss else '✗'}")
+    
     # Kwargs for weight rounding calibration
     kwargs = dict(cali_data=cali_data, iters=args.iters_w, weight=args.weight,
                 b_range=(args.b_start, args.b_end), warmup=args.warmup, opt_mode='mse',
                 lr=args.lr, input_prob=args.input_prob, keep_gpu=not args.keep_cpu, 
-                lamb_r=args.lamb_r, T=args.T, bn_lr=args.bn_lr, lamb_c=args.lamb_c)
+                lamb_r=args.lamb_r, T=args.T, bn_lr=args.bn_lr, lamb_c=args.lamb_c,
+                use_rec_loss=use_rec_loss, use_round_loss=use_round_loss, use_pd_loss=use_pd_loss)
 
 
     '''init weight quantizer'''

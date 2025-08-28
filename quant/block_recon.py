@@ -30,7 +30,8 @@ def block_reconstruction(model: QuantModel, fp_model: QuantModel, block: BaseQua
                         opt_mode: str = 'mse', b_range: tuple = (20, 2),
                         warmup: float = 0.0, p: float = 2.0, lr: float = 4e-5,
                         input_prob: float = 1.0, keep_gpu: bool = True, 
-                        lamb_r: float = 0.2, T: float = 7.0, bn_lr: float = 1e-3, lamb_c=0.02):
+                        lamb_r: float = 0.2, T: float = 7.0, bn_lr: float = 1e-3, lamb_c=0.02,
+                        use_rec_loss: bool = True, use_round_loss: bool = True, use_pd_loss: bool = True):
     """
     Reconstruction to optimize the output from each block.
 
@@ -100,8 +101,10 @@ def block_reconstruction(model: QuantModel, fp_model: QuantModel, block: BaseQua
 
     loss_mode = 'relaxation'
     rec_loss = opt_mode
+    
     loss_func = LossFunction(block, round_loss=loss_mode, weight=weight, max_count=iters, rec_loss=rec_loss,
-                             b_range=b_range, decay_start=0, warmup=warmup, p=p, lam=lamb_r, T=T)
+                             b_range=b_range, decay_start=0, warmup=warmup, p=p, lam=lamb_r, T=T,
+                             use_rec_loss=use_rec_loss, use_round_loss=use_round_loss, use_pd_loss=use_pd_loss)
     device = 'cuda'
     sz = cached_inps.size(0)
     for i in range(iters):
@@ -171,7 +174,10 @@ class LossFunction:
                  warmup: float = 0.0,
                  p: float = 2.,
                  lam: float = 1.0,
-                 T: float = 7.0):
+                 T: float = 7.0,
+                 use_rec_loss: bool = True,
+                 use_round_loss: bool = True,
+                 use_pd_loss: bool = True):
 
         self.block = block
         self.round_loss = round_loss
@@ -181,6 +187,11 @@ class LossFunction:
         self.p = p
         self.lam = lam
         self.T = T
+        
+        # Ablation flags
+        self.use_rec_loss = use_rec_loss
+        self.use_round_loss = use_round_loss
+        self.use_pd_loss = use_pd_loss
 
         self.temp_decay = LinearTempDecay(max_count, rel_start_decay=warmup + (1 - warmup) * decay_start,
                                           start_b=b_range[0], end_b=b_range[1])
@@ -201,29 +212,48 @@ class LossFunction:
         :return: total loss function
         """
         self.count += 1
-        if self.rec_loss == 'mse':
-            rec_loss = lp_loss(pred, tgt, p=self.p)
+        
+        # Initialize loss components
+        rec_loss = torch.tensor(0.0, device=pred.device)
+        round_loss = torch.tensor(0.0, device=pred.device)
+        pd_loss = torch.tensor(0.0, device=pred.device)
+        
+        # Compute reconstruction loss if enabled
+        if self.use_rec_loss:
+            if self.rec_loss == 'mse':
+                rec_loss = lp_loss(pred, tgt, p=self.p)
+            else:
+                raise ValueError('Not supported reconstruction loss function: {}'.format(self.rec_loss))
+
+        # Compute prediction difference loss if enabled
+        if self.use_pd_loss:
+            pd_loss = self.pd_loss(F.log_softmax(output / self.T, dim=1), F.softmax(output_fp / self.T, dim=1)) / self.lam
+
+        # Compute rounding loss if enabled
+        if self.use_round_loss:
+            b = self.temp_decay(self.count)
+            if self.count < self.loss_start or self.round_loss == 'none':
+                b = round_loss = 0
+            elif self.round_loss == 'relaxation':
+                round_loss = 0
+                for name, module in self.block.named_modules():
+                    if isinstance(module, QuantModule):
+                        round_vals = module.weight_quantizer.get_soft_targets()
+                        round_loss += self.weight * (1 - ((round_vals - .5).abs() * 2).pow(b)).sum()
+            else:
+                raise NotImplementedError
         else:
-            raise ValueError('Not supported reconstruction loss function: {}'.format(self.rec_loss))
+            b = 0
 
-        pd_loss = self.pd_loss(F.log_softmax(output / self.T, dim=1), F.softmax(output_fp / self.T, dim=1)) / self.lam
-
-        b = self.temp_decay(self.count)
-        if self.count < self.loss_start or self.round_loss == 'none':
-            b = round_loss = 0
-        elif self.round_loss == 'relaxation':
-            round_loss = 0
-            for name, module in self.block.named_modules():
-                if isinstance(module, QuantModule):
-                    round_vals = module.weight_quantizer.get_soft_targets()
-                    round_loss += self.weight * (1 - ((round_vals - .5).abs() * 2).pow(b)).sum()
-        else:
-            raise NotImplementedError
-
+        # Combine losses based on ablation flags
         total_loss = rec_loss + round_loss + pd_loss
+        
         if self.count % 500 == 0:
             print('Total loss:\t{:.3f} (rec:{:.3f}, pd:{:.3f}, round:{:.3f})\tb={:.2f}\tcount={}'.format(
                 float(total_loss), float(rec_loss), float(pd_loss), float(round_loss), b, self.count))
+            print('Ablation: rec_loss={}, round_loss={}, pd_loss={}'.format(
+                self.use_rec_loss, self.use_round_loss, self.use_pd_loss))
+        
         return total_loss
 
 
