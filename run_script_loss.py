@@ -15,13 +15,13 @@ if __name__ == "__main__":
     if args.exp_name == "resnet18":
         for seed in seeds:
             for i in range(4):
-                os.system(f"python main_imagenet.py --data_path /home/alz07xz/imagenet --arch resnet18 --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.02 --alpha_list 0.6 --num_clusters_list 64 --pca_dim_list 50 --use_rec_loss True --use_round_loss True --use_pd_loss True")
+                os.system(f"python main_imagenet.py --data_path /home/alz07xz/imagenet --arch resnet18 --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.02 --alpha_list 0.6 --num_clusters_list 64 --pca_dim_list 50 --use_rec_loss --use_round_loss --use_pd_loss")
                 time.sleep(0.5)
-                os.system(f"python main_imagenet.py --data_path /home/alz07xz/imagenet --arch resnet18 --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.02 --alpha_list 0.6 --num_clusters_list 64 --pca_dim_list 50 --use_rec_loss True --use_round_loss True --use_pd_loss False")
+                os.system(f"python main_imagenet.py --data_path /home/alz07xz/imagenet --arch resnet18 --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.02 --alpha_list 0.6 --num_clusters_list 64 --pca_dim_list 50 --use_rec_loss --no_pd_loss --no_round_loss")
                 time.sleep(0.5)
-                os.system(f"python main_imagenet.py --data_path /home/alz07xz/imagenet --arch resnet18 --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.02 --alpha_list 0.6 --num_clusters_list 64 --pca_dim_list 50 --use_rec_loss True --use_round_loss False --use_pd_loss True")
+                os.system(f"python main_imagenet.py --data_path /home/alz07xz/imagenet --arch resnet18 --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.02 --alpha_list 0.6 --num_clusters_list 64 --pca_dim_list 50 --no_rec_loss --use_pd_loss --no_round_loss")
                 time.sleep(0.5)
-                os.system(f"python main_imagenet.py --data_path /home/alz07xz/imagenet --arch resnet18 --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.02 --alpha_list 0.6 --num_clusters_list 64 --pca_dim_list 50 --use_rec_loss False --use_round_loss True --use_pd_loss True")
+                os.system(f"python main_imagenet.py --data_path /home/alz07xz/imagenet --arch resnet18 --seed {seed} --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.02 --alpha_list 0.6 --num_clusters_list 64 --pca_dim_list 50 --use_rec_loss --no_pd_loss --no_round_loss")
                 time.sleep(0.5)
 
 
